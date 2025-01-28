@@ -6,12 +6,11 @@ import copy
 
 import numpy as np
 
-import transformers, datasets
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.t5.modeling_t5 import T5Config, T5PreTrainedModel, T5Stack
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from transformers import T5EncoderModel, T5Tokenizer
-from transformers import TrainingArguments, Trainer, set_seed
+
 
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
@@ -35,7 +34,8 @@ class LoRALinear(nn.Module):
         self.rank = rank
         self.scaling_rank = scaling_rank
         self.weight = linear_layer.weight
-        self.bias = linear_layer.bias
+        self.bias = linear_layer.bias 
+
         if self.rank > 0:
             self.lora_a = nn.Parameter(torch.randn(rank, linear_layer.in_features) * init_scale)
             if init_scale < 0:
@@ -73,6 +73,7 @@ class LoRALinear(nn.Module):
                 weight = weight * torch.matmul(self.multi_lora_b, self.multi_lora_a) / self.scaling_rank
             if self.rank:
                 weight = weight + torch.matmul(self.lora_b, self.lora_a) / self.rank
+            
             return F.linear(input, weight, self.bias)
 
     def extra_repr(self):
@@ -249,7 +250,7 @@ def PT5_classification_model(num_labels, half_precision = True):
         tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
         model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float16).to(torch.device('cuda'))
     else:
-          raise ValueError('Half precision can be run on GPU only.')
+        raise ValueError('Half precision can be run on GPU only.')
     
     # Create new Classifier model with PT5 dimensions
     class_config=ClassConfig(num_labels=num_labels)

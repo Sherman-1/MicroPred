@@ -82,7 +82,7 @@ def create_dataset(tokenizer,seqs,labels):
     return dataset
     
 class DebugTrainer(Trainer):
-    def training_step(self, model, inputs, num_items_in_batch):
+    def training_step(self, model, inputs):
         # Perform the forward pass and compute loss
         loss = super().training_step(model, inputs)
 
@@ -117,12 +117,12 @@ def train_per_protein(
         accum= 2,         #gradient accumulation
     
         val_batch = 16,   #batch size for evaluation
-        epochs= 10,       #training epochs
-        lr= 3e-4,         #recommended learning rate
-        seed= 42,         #random seed
-        deepspeed= False,  #if gpu is large enough disable deepspeed for training speedup
-        mixed= True,     #enable mixed precision training
-        gpu= 1 ):         #gpu selection (1 for first gpu)
+        epochs = 10,       #training epochs
+        lr = 6e-4,         #recommended learning rate
+        seed = 42,         #random seed
+        deepspeed = False,  #if gpu is large enough disable deepspeed for training speedup
+        mixed = False,     #enable mixed precision training
+        gpu = 1 ):         #gpu selection (1 for first gpu)
 
     # Set gpu device
     os.environ["CUDA_VISIBLE_DEVICES"]=str(gpu-1)
@@ -131,7 +131,7 @@ def train_per_protein(
     set_seeds(seed)
     
     # load model
-    model, tokenizer = PT5_classification_model(num_labels=num_labels)
+    model, tokenizer = PT5_classification_model(num_labels=num_labels, half_precision = mixed)
 
     # Preprocess inputs
     # Replace uncommon AAs with "X"
@@ -148,7 +148,7 @@ def train_per_protein(
     # Huggingface Trainer arguments
     args = TrainingArguments(
         "./",
-        eval_strategy = "epoch",
+        evaluation_strategy = "epoch",
         logging_strategy = "epoch",
         save_strategy = "no",
         learning_rate=lr,
@@ -174,7 +174,7 @@ def train_per_protein(
         return metric.compute(predictions=predictions, references=labels)
     
     # Trainer          
-    trainer = DebugTrainer(
+    trainer = Trainer(
         model,
         args,
         train_dataset=train_set,
@@ -190,7 +190,7 @@ def train_per_protein(
 
 def main():
 
-    tokenizer, model, history = train_per_protein(my_train, my_valid, num_labels=1, batch=1, accum=8, epochs=20, seed=42)
+    tokenizer, model, history = train_per_protein(my_train, my_valid, mixed = False, num_labels=1, batch=16, accum=1, lr = 6e-4, epochs=20, seed=42)
 
 
 if __name__ == "__main__": 
