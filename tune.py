@@ -32,7 +32,6 @@ def debug_gradients(model):
             print(f"Gradient for {name}: {param.grad.norm().item()}")
 
 
-
 print("Torch version: ",torch.__version__)
 print("Cuda version: ",torch.version.cuda)
 print("Numpy version: ",np.__version__)
