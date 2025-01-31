@@ -11,16 +11,20 @@ import torch.optim as optim
 
 from tqdm import tqdm
 
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+
 from transformers import T5Tokenizer, T5EncoderModel, TrainingArguments, Trainer
 from peft import  get_peft_model, LoraConfig, TaskType
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+import torch.nn as nn
 
 import wandb
 
 NUM_CLASSES = 5
 BATCH_SIZE = 20
 GRADIENT_ACCUMULATION_STEPS = 2
-EPOCHS = 3
+EPOCHS = 10
 LEARNING_RATE = 2e-5
 MAX_SEQ_LENGTH = 512 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,6 +75,25 @@ class ProtT5Dataset(Dataset):
         item = {key: torch.tensor(val) for key, val in sample.items()}
         item["labels"] = torch.tensor(sample["labels"], dtype=torch.long)
         return item
+    
+class ProtT5Classifier(nn.Module):
+    def __init__(self, base_model, num_classes):
+        super().__init__()
+        self.encoder = base_model
+        self.classifier = nn.Sequential(
+            nn.Linear(1024, 512), 
+            nn.ReLU(),             
+            nn.Dropout(0.3),       
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        pooled_output = outputs.last_hidden_state.mean(dim=1) 
+        logits = self.classifier(pooled_output)
+        return logits
 
 torch.cuda.empty_cache()  
 torch.cuda.synchronize()  
@@ -92,17 +115,7 @@ LORA_CONFIG = LoraConfig(
     task_type=TaskType.FEATURE_EXTRACTION  
 )
 
-class ProtT5Classifier(nn.Module):
-    def __init__(self, base_model, num_classes):
-        super().__init__()
-        self.encoder = base_model
-        self.classifier = nn.Linear(1024, num_classes, device = "cuda")
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.last_hidden_state.mean(dim=1) 
-        logits = self.classifier(pooled_output)
-        return logits
 
 hf_train_dataset = create_dataset(tokenizer, train_data["sequence"].to_list(), train_data["category"].to_list())
 train_dataset = ProtT5Dataset(hf_train_dataset)
@@ -123,7 +136,8 @@ optimizer = optim.AdamW(MODEL.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss()
 scaler = torch.cuda.amp.GradScaler()
 
-first_grad = True
+best_val_loss = float("inf")
+best_model_path = "models/310125_FT_1LAYERCLASSIF.pth"
 for epoch in tqdm(range(EPOCHS), desc = "EPOCH"):
 
     MODEL.train()
@@ -142,20 +156,21 @@ for epoch in tqdm(range(EPOCHS), desc = "EPOCH"):
         if (step % GRADIENT_ACCUMULATION_STEPS == GRADIENT_ACCUMULATION_STEPS - 1) or (step == len(train_loader) - 1):
             scaler.step(optimizer)
             scaler.update()
-            if first_grad:
-                print_gpu_memory("Peak vRAM usage")
-                first_grad = False
-            
             optimizer.zero_grad()
 
         total_loss += loss.item()
+        wandb.log({
+            "train_loss": loss.item(),
+            "step": step + (epoch * len(train_loader))  # Total 
+        })
 
     avg_train_loss = total_loss / len(train_loader)
+    wandb.log({"avg_train_loss": avg_train_loss, "epoch": epoch + 1})
 
     MODEL.eval()
     total_val_loss = 0.0
     with torch.no_grad():
-        for batch in test_loader:
+        for val_step, batch in tqdm(enumerate(test_loader), leave=False, desc="VALIDATION"):
             batch = {key: val.to(DEVICE) for key, val in batch.items()}
             labels = batch.pop("labels")
 
@@ -165,14 +180,57 @@ for epoch in tqdm(range(EPOCHS), desc = "EPOCH"):
 
             total_val_loss += loss.item()
 
+            wandb.log({
+                "val_loss": loss.item(),
+                "val_step": val_step + (epoch * len(test_loader))
+            })
+
     avg_val_loss = total_val_loss / len(test_loader)
-    wandb.log({
-        "Loss/Train": avg_train_loss,  
-        "Loss/Test": avg_val_loss,
-        "epoch": epoch + 1  
-    })
+
+    wandb.log({"avg_val_loss": avg_val_loss, "epoch": epoch + 1})
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        torch.save(MODEL.state_dict(), best_model_path)
+    
 
     torch.cuda.empty_cache()
 
 wandb.finish()  
-print("\n🎉 Training complete!")
+
+
+MODEL.load_state_dict(torch.load(best_model_path))
+MODEL.eval()
+
+total_val_loss = 0.0
+all_preds, all_labels = [], []
+
+with torch.no_grad():
+    for batch in tqdm(test_loader, leave=False, desc="FINAL EVALUATION"):
+        batch = {key: val.to(DEVICE) for key, val in batch.items()}
+        labels = batch.pop("labels")
+
+        with torch.cuda.amp.autocast():
+            logits = MODEL(**batch)
+            loss = criterion(logits, labels)
+
+        total_val_loss += loss.item()
+
+        # Logits to pred
+        preds = torch.argmax(F.softmax(logits, dim=-1), dim=-1).cpu().numpy()
+        labels = labels.cpu().numpy()
+
+        all_preds.extend(preds)
+        all_labels.extend(labels)
+
+final_val_loss = total_val_loss / len(test_loader)
+
+acc = accuracy_score(all_labels, all_preds)
+precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average="weighted")
+
+metrics_table = wandb.Table(columns=["Epoch", "Validation Loss", "Accuracy", "Precision", "Recall", "F1 Score"])
+
+metrics_table.add_data(epoch + 1, avg_val_loss, acc, precision, recall, f1)
+
+wandb.log({"Validation Metrics Table": metrics_table})
+
+
