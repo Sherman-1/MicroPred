@@ -3,19 +3,94 @@ import random
 import numpy as np 
 import polars as pl 
 
-from datasets import Dataset
+from datasets import Dataset as HFDataset
 
 import torch
-
 import torch.nn as nn
+import torch.optim as optim
+
+from tqdm import tqdm
 
 from transformers import T5Tokenizer, T5EncoderModel, TrainingArguments, Trainer
 from peft import  get_peft_model, LoraConfig, TaskType
+from torch.utils.data import Dataset, DataLoader
+
+import wandb
+
+NUM_CLASSES = 5
+BATCH_SIZE = 20
+GRADIENT_ACCUMULATION_STEPS = 2
+EPOCHS = 3
+LEARNING_RATE = 2e-5
+MAX_SEQ_LENGTH = 512 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+WANDB_KEY = "b0b0b462179eb67f29990745021c903e24636abd"
+wandb.login(key=WANDB_KEY)
+
+wandb.init(project="ProtT5_Finetuning", 
+           config={
+            "epochs": EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LEARNING_RATE,
+            "gradient_accumulation": GRADIENT_ACCUMULATION_STEPS,
+            "max_seq_length": MAX_SEQ_LENGTH
+        },
+        tags=["dev"]
+)
+
+if not torch.cuda.is_available() : exit("Cuda compatible GPU not found")
+
+def print_gpu_memory(msg=""):
+    allocated = torch.cuda.memory_allocated() / 1e9  
+    reserved = torch.cuda.memory_reserved() / 1e9 
+    print(f"\n🔹 {msg}")
+    print(f"   - Allocated: {allocated:.2f} GB")
+    print(f"   - Reserved: {reserved:.2f} GB")
+
+def check_model_on_gpu(model):
+    is_on_gpu = all(param.device.type == "cuda" for param in model.parameters())
+    if is_on_gpu: 
+        print("✅ Model is fully on GPU") 
+    else:
+        exit("❌ Some parameters are still on CPU")
+
+def create_dataset(tokenizer, seqs, labels):
+    tokenized = tokenizer(seqs, max_length=MAX_SEQ_LENGTH, padding="max_length", truncation=True)
+    tokenized["labels"] = labels
+    return HFDataset.from_dict(tokenized)
+
+class ProtT5Dataset(Dataset):
+    def __init__(self, hf_dataset):
+        self.hf_dataset = hf_dataset  
+
+    def __len__(self):
+        return len(self.hf_dataset)
+
+    def __getitem__(self, idx):
+        sample = self.hf_dataset[idx]
+        item = {key: torch.tensor(val) for key, val in sample.items()}
+        item["labels"] = torch.tensor(sample["labels"], dtype=torch.long)
+        return item
+
+torch.cuda.empty_cache()  
+torch.cuda.synchronize()  
+print("VRAM cleared!")
+print_gpu_memory("GPU Memory before loading model :")
+
+tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
+
+train_data = pl.read_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/train_sequences.csv")
+test_data = pl.read_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/test_sequences.csv")
 
 
-if not torch.cuda.is_available():
-
-    exit("Ola oh tu fais quoi là !!!")
+LORA_CONFIG = LoraConfig(
+    r=8,  
+    lora_alpha=32,  
+    lora_dropout=0.1,  
+    target_modules=["q", "v"],  
+    bias="none",  
+    task_type=TaskType.FEATURE_EXTRACTION  
+)
 
 class ProtT5Classifier(nn.Module):
     def __init__(self, base_model, num_classes):
@@ -28,98 +103,76 @@ class ProtT5Classifier(nn.Module):
         pooled_output = outputs.last_hidden_state.mean(dim=1) 
         logits = self.classifier(pooled_output)
         return logits
-    
 
-def create_dataset(tokenizer, seqs, labels):
+hf_train_dataset = create_dataset(tokenizer, train_data["sequence"].to_list(), train_data["category"].to_list())
+train_dataset = ProtT5Dataset(hf_train_dataset)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    tokenized = tokenizer(seqs, max_length=1024, padding=False, truncation=True) 
-    tokenized["labels"] = labels
-    
-    return Dataset.from_dict(tokenized)
+hf_test_dataset = create_dataset(tokenizer, test_data["sequence"].to_list(), test_data["category"].to_list())
+test_dataset = ProtT5Dataset(hf_test_dataset)
+test_loader = DataLoader(test_dataset, batch_size=128, shuffle=True) # Since no grad accum ?
 
-tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
+BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float16).to(DEVICE)
+PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)
+MODEL = ProtT5Classifier(PEFT_MODEL, NUM_CLASSES).to(DEVICE)
 
+check_model_on_gpu(MODEL)
+print_gpu_memory("GPU Memory after loading model :")
 
- 
-data = pl.scan_csv("../splits/three_vs_rest.csv").with_columns(pl.when(pl.col("target") >= 1).then(pl.lit(1)).otherwise(pl.lit(0)).alias("label"))
+optimizer = optim.AdamW(MODEL.parameters(), lr=LEARNING_RATE)
+criterion = nn.CrossEntropyLoss()
+scaler = torch.cuda.amp.GradScaler()
 
-train_data = data.filter(pl.col("set") == "train").select(["sequence","label"]).with_columns(
-    sequence = pl.col("sequence").str.replace(r"U|B|O|Z","X").replace("*", "").map_elements(lambda seq : " ".join(seq), return_dtype = pl.String)
-).collect().sample(200)
+first_grad = True
+for epoch in tqdm(range(EPOCHS), desc = "EPOCH"):
 
-test_data = data.filter(pl.col("set") == "test").select(["sequence","label"]).with_columns(
-    sequence = pl.col("sequence").str.replace(r"U|B|O|Z","X").replace("*", "").map_elements(lambda seq : " ".join(seq), return_dtype = pl.String)
-).collect().sample(200)
+    MODEL.train()
+    total_loss = 0.0
+    for step, batch in tqdm(enumerate(train_loader), leave=False, desc = "BATCH"):
+        
+        batch = {key: val.to(DEVICE) for key, val in batch.items()}
+        labels = batch.pop("labels")  
 
+        with torch.cuda.amp.autocast():  
+            logits = MODEL(**batch)
+            loss = criterion(logits, labels)
 
-train_dataset = create_dataset(tokenizer = tokenizer,
-                               seqs = train_data.select("sequence").to_series().to_list(),
-                               labels = train_data.select("label").to_series().to_list()
-)
+        scaler.scale(loss).backward()
 
-test_dataset = create_dataset(tokenizer = tokenizer,
-                               seqs = test_data.select("sequence").to_series().to_list(),
-                               labels = test_data.select("label").to_series().to_list()
-)
+        if (step % GRADIENT_ACCUMULATION_STEPS == GRADIENT_ACCUMULATION_STEPS - 1) or (step == len(train_loader) - 1):
+            scaler.step(optimizer)
+            scaler.update()
+            if first_grad:
+                print_gpu_memory("Peak vRAM usage")
+                first_grad = False
+            
+            optimizer.zero_grad()
 
+        total_loss += loss.item()
 
-lora_config = LoraConfig(
-    r=4,  # Rank of LoRA matrices (trade-off between efficiency & quality)
-    lora_alpha=32,  # Scaling factor
-    lora_dropout=0.1,  # Dropout for regularization
-    target_modules=["q", "v"],  # Apply LoRA to query (`q`) and value (`v`) layers
-    bias="none",  # No bias update
-    task_type=TaskType.FEATURE_EXTRACTION  # Since we're using an encoder model
-)
+    avg_train_loss = total_loss / len(train_loader)
 
-base_model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float32).to(torch.device('cuda'))
-peft_model = get_peft_model(base_model, lora_config)
-model = ProtT5Classifier(peft_model, num_classes=2)
+    MODEL.eval()
+    total_val_loss = 0.0
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = {key: val.to(DEVICE) for key, val in batch.items()}
+            labels = batch.pop("labels")
 
+            with torch.cuda.amp.autocast():
+                logits = MODEL(**batch)
+                loss = criterion(logits, labels)
 
+            total_val_loss += loss.item()
 
-# Ensure the model is on the correct device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    avg_val_loss = total_val_loss / len(test_loader)
+    wandb.log({
+        "Loss/Train": avg_train_loss,  
+        "Loss/Test": avg_val_loss,
+        "epoch": epoch + 1  
+    })
 
+    torch.cuda.empty_cache()
 
-# Sample test sequences
-test_sequences = ["MKVLLFAIPTAAAVVTLATGNPQKTVTIKTG", "MNGTEGPNFYVPFSNKTGVVRSPFEYPQYYLA"]
-test_labels = torch.tensor([0, 1], dtype=torch.long).to(device)  # Binary classification labels
-
-# Tokenize the test sequences
-tokenized_inputs = tokenizer(
-    test_sequences, max_length=1024, padding=True, truncation=True, return_tensors="pt"
-)
-
-# Move inputs to the correct device
-tokenized_inputs = {k: v.to(device) for k, v in tokenized_inputs.items()}
-
-# Define a loss function (CrossEntropy for classification)
-criterion = torch.nn.CrossEntropyLoss()
-
-# Forward pass to compute logits
-logits = model(**tokenized_inputs)
-
-# Compute loss
-loss = criterion(logits, test_labels)
-
-# Backward pass to compute gradients
-loss.backward()
-
-# Print loss
-print("\n✅ Backward pass successful!")
-print("Loss:", loss.item())
-
-# Check which parameters received gradients
-print("\n📌 Checking gradients:")
-
-for name, param in model.named_parameters():
-    if param.requires_grad and param.grad is not None:
-        print(f"✔ {name} has gradients! Shape: {param.grad.shape}")
-    elif param.requires_grad and param.grad is None:
-        print(f"❌ {name} has NO gradients!")
-
-# Optional: Zero gradients before next step (common practice in training)
-model.zero_grad()
-
-
+wandb.finish()  
+print("\n🎉 Training complete!")
