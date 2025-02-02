@@ -13,13 +13,16 @@ from tqdm import tqdm
 
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
-from transformers import T5Tokenizer, T5EncoderModel, TrainingArguments, Trainer
+from transformers import T5Tokenizer, T5EncoderModel, set_seed
 from peft import  get_peft_model, LoraConfig, TaskType
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import torch.nn as nn
 
 import wandb
+
+from src.utils import print_gpu_memory, check_model_on_gpu
+
 
 NUM_CLASSES = 5
 BATCH_SIZE = 20
@@ -44,19 +47,6 @@ wandb.init(project="ProtT5_Finetuning",
 
 if not torch.cuda.is_available() : exit("Cuda compatible GPU not found")
 
-def print_gpu_memory(msg=""):
-    allocated = torch.cuda.memory_allocated() / 1e9  
-    reserved = torch.cuda.memory_reserved() / 1e9 
-    print(f"\n🔹 {msg}")
-    print(f"   - Allocated: {allocated:.2f} GB")
-    print(f"   - Reserved: {reserved:.2f} GB")
-
-def check_model_on_gpu(model):
-    is_on_gpu = all(param.device.type == "cuda" for param in model.parameters())
-    if is_on_gpu: 
-        print("✅ Model is fully on GPU") 
-    else:
-        exit("❌ Some parameters are still on CPU")
 
 def create_dataset(tokenizer, seqs, labels):
     tokenized = tokenizer(seqs, max_length=MAX_SEQ_LENGTH, padding="max_length", truncation=True)
@@ -234,3 +224,31 @@ metrics_table.add_data(epoch + 1, avg_val_loss, acc, precision, recall, f1)
 wandb.log({"Validation Metrics Table": metrics_table})
 
 
+if __name__ == "__main__":
+
+    import argparse
+    import doctest
+    import sys
+
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("--test", help="Test the code", action="store_true")
+    parser.add_argument("--func", help="Test only the given function(s)", nargs="+")
+    args = parser.parse_args()
+
+    if args.test:
+        if args.func is None:
+            doctest.testmod(
+                optionflags=doctest.ELLIPSIS | doctest.REPORT_ONLY_FIRST_FAILURE | doctest.REPORT_NDIFF
+            )
+        else:
+            for f in args.func:
+                print(f"Testing {f}")
+                f = getattr(sys.modules[__name__], f)   
+
+                doctest.run_docstring_examples(
+                    f,
+                    globals(),
+                    optionflags=doctest.ELLIPSIS | doctest.REPORT_ONLY_FIRST_FAILURE | doctest.REPORT_NDIFF,
+                )
+
+        sys.exit()

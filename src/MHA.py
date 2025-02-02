@@ -1,3 +1,12 @@
+#!/usr/bin/env python3
+
+#############################################################################
+# Author: Guillaume Bouvier -- guillaume.bouvier@pasteur.fr                 #
+# https://research.pasteur.fr/en/member/guillaume-bouvier/                  #
+# Copyright (c) 2024 Institut Pasteur                                       #
+#############################################################################
+#
+# creation_date: Fri Nov 29 16:53:41 2024
 
 import os
 import sys
@@ -33,15 +42,6 @@ CLASSES = [
 CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES)))) 
 INT_TO_CLASS = dict(zip(range(len(CLASSES)), CLASSES))
 
-#!/usr/bin/env python3
-
-#############################################################################
-# Author: Guillaume Bouvier -- guillaume.bouvier@pasteur.fr                 #
-# https://research.pasteur.fr/en/member/guillaume-bouvier/                  #
-# Copyright (c) 2024 Institut Pasteur                                       #
-#############################################################################
-#
-# creation_date: Fri Nov 29 16:53:41 2024
 
 import os
 
@@ -558,8 +558,3 @@ if __name__ == "__main__":
     plt.plot(losses, label = "Loss")
     plt.legend()
     plt.savefig("101224_MHAP_MLP_BCE_reduce_embeds_losses.png")
-
-
-if __name__ == "__main__":
-
-    pass
