@@ -5,7 +5,7 @@
 #PBS -l ngpus=1
 #PBS -q bim
 #PBS -l walltime=30000:00:00
-#PBS -l mem=32Gb
+#PBS -l mem=16Gb
 #PBS -l ncpus=8
 #PBS -koed
 

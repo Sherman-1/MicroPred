@@ -3,6 +3,10 @@ from torch.utils.data import Dataset
 import torch 
 import torch.nn.functional as F
 
+from sklearn.utils.class_weight import compute_class_weight
+
+import numpy as np
+
 CLASSES = [
     
     "molten",
@@ -50,7 +54,7 @@ class SeqProtT5Dataset(Dataset):
 class EmbedProtT5Dataset(Dataset):
 
     """
-    >>> ds = ProtTransDataset(ptfile="datasets/test_data.pt")
+    >>> ds = ResidueEmbedProtT5Dataset(ptfile="datasets/test_data.pt")
 
     single
     >>> embed, class_id, name = ds[0]
@@ -75,14 +79,29 @@ class EmbedProtT5Dataset(Dataset):
     torch.Size([3, 84])
     """
     
-    def __init__(self, ptfile, num_classes = 5, return_one_hot = True):
+    def __init__(self, ptfile, num_classes):
         
         self.data = torch.load(f=ptfile, weights_only=False)
         self.names = list(self.data.keys())
-        self.targets = [self.data[name]["class_type"] for name in self.names]
         self.num_classes = num_classes
-        self.return_one_hot = return_one_hot
 
+        targets = [self.data[name]["class_type"] for name in self.names]
+
+        if all(isinstance(target, type(targets[0])) for target in targets):
+            print(f"All targets are of type {type(targets[0])}.")
+        else:
+            raise ValueError("Targets contain mixed datatypes.")
+
+        if type(targets[0]) == str:
+            self.targets = [ CLASS_TO_INT[t] for t in targets ]
+        elif type(targets[0]) == int:
+            self.targets = targets
+        else:
+            print("Wtf")
+
+        assert num_classes == len(set(self.targets)), "Error : more classes in dataset than given in num_classes"
+
+        self.class_weights = self._get_class_weights()
 
     def __len__(self):
         return len(self.data)
@@ -93,13 +112,24 @@ class EmbedProtT5Dataset(Dataset):
         embedding = self.data[name]["embedding"]
         class_type = self.data[name]["class_type"]
 
-        class_id = CLASS_TO_INT[class_type]
-        
-        if self.return_one_hot:
-            one_hot = torch.nn.functional.one_hot(torch.tensor(class_id), self.num_classes).float()
-            return embedding, one_hot, name
+        if not type(class_type) == int:
+            class_id = CLASS_TO_INT[class_type]
         else:
-            return embedding, torch.tensor(class_id), name
+            class_id = class_type
+        
+        one_hot = torch.nn.functional.one_hot(torch.tensor(class_id), self.num_classes).float()
+        return embedding, one_hot, class_type, name
+
+    
+    def _get_class_weights(self):
+
+        weights_vector = compute_class_weight(y = self.targets, 
+                                                  class_weight = "balanced", 
+                                                  classes = np.sort(np.unique(self.targets)) # Sort to match CLASS_TO_INT
+                                                )
+        return { i : weight for (i, weight) in enumerate(weights_vector) }
+
+
 
 def padding_collate(batch):
     """

@@ -139,7 +139,7 @@ def read_fasta( fasta_path ):
     return sequences
 
 
-def get_embeddings( model, tokenizer, device : torch.device, seqs : dict, per_residue : bool, per_protein: bool, sec_struct : bool,
+def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_protein: bool, sec_struct : bool,
                    max_residues=4000, max_seq_len=1000, max_batch=100 ):
 
     results = {"residue_embs" : dict(),
@@ -155,7 +155,7 @@ def get_embeddings( model, tokenizer, device : torch.device, seqs : dict, per_re
     print(f"        Per-protein embeddings: {per_protein}")
     print(f"        Secondary structure prediction: {sec_struct}")
 
-    
+    model, tokenizer = get_T5_model(device)
     
     if sec_struct:
         print("🛠 Loading secondary structure model...")
@@ -166,13 +166,14 @@ def get_embeddings( model, tokenizer, device : torch.device, seqs : dict, per_re
     seq_dict   = sorted( seqs.items(), key=lambda kv: len( seqs[kv[0]] ), reverse=True )
     start = time.time()
     batch = list()
-    for seq_idx, (pdb_id, seq) in tqdm(enumerate(seq_dict,1), desc = "Computing embeddings ...", total = len(seq_dict)):
+    for seq_idx, (pdb_id, seq) in tqdm(enumerate(seq_dict,1), desc = "Generating embeddings", total=len(seq_dict)):
         seq = seq
         seq_len = len(seq)
         seq = ' '.join(list(seq))
         batch.append((pdb_id,seq,seq_len))
 
         n_res_batch = sum([ s_len for  _, _, s_len in batch ]) + seq_len
+        # Is the batch full ? If yes, forward pass
         if len(batch) >= max_batch or n_res_batch>=max_residues or seq_idx==len(seq_dict) or seq_len>max_seq_len:
             pdb_ids, seqs, seq_lens = zip(*batch)
             batch = list()
@@ -205,7 +206,7 @@ def get_embeddings( model, tokenizer, device : torch.device, seqs : dict, per_re
                     protein_emb = emb.mean(dim=0)
                     results["protein_embs"][identifier] = protein_emb.detach().cpu().numpy().squeeze()
 
-
+            
     passed_time=time.time()-start
     avg_time = passed_time/len(results["residue_embs"]) if per_residue else passed_time/len(results["protein_embs"])
     print('\n############# EMBEDDING STATS #############')
@@ -214,36 +215,9 @@ def get_embeddings( model, tokenizer, device : torch.device, seqs : dict, per_re
     print("Time for generating embeddings: {:.1f}[m] ({:.3f}[s/protein])".format(
         passed_time/60, avg_time ))
     print('\n############# END #############')
+
     return results
 
-
-def compute(sequences : dict ,max_residues=2000, max_seq_len=1000, max_batch=100, per_protein=True, per_residue=False, sec_struct = False):
-
-    if torch.cuda.is_available():
-
-        device = torch.device("cuda")
-
-    elif torch.backends.mps.is_available():
-
-        device = torch.device("mps")
-
-    else:
-
-        device = torch.device("cpu")
-
-    print("Using device: {}".format(device))
-    print("Loading model ...")
-
-    model, tokenizer = get_T5_model(device)
-
-    try:
-        embeddings = get_embeddings(model = model, tokenize = tokenizer, device = device, seqs = sequences, 
-                                    per_residue = per_residue, per_protein = per_protein, sec_stuct = sec_struct, 
-                                    max_residues=max_residues, max_seq_len=max_seq_len, max_batch=max_batch)
-        return embeddings  
-
-    except Exception as e:
-        print(e)
 
 
 def main(): 
@@ -261,9 +235,8 @@ def main():
 
     per_protein = True
     per_residue = True
-    sec_struct = True
+    sec_struct = False
 
-    
     residue_emb = {}
     prot_emb = {}
     for category, data in train.group_by("category"): 
@@ -273,13 +246,16 @@ def main():
 
         seq_dict = { k : v for k,v in zip(ids, seqs) }
 
-        embeddings = get_embeddings(model, tokenizer, device, seq_dict, per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
+        embeddings = get_embeddings(device, seq_dict, max_batch=1024, max_residues=5000,
+                                    per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
         residue_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["residue_embs"].items()})
         prot_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["protein_embs"].items()})
 
+        
 
-    torch.save(obj=residue_emb, f="training_dataset/trainset_residue_embeddings.pt")
-    torch.save(obj=prot_emb, f="training_dataset/trainset_protein_embeddings.pt")
+    print(f"Number of residue embeddings : {len(residue_emb)}")
+    torch.save(obj=residue_emb, f="../training_dataset/trainset_residue_embeddings.pt")
+    torch.save(obj=prot_emb, f="../training_dataset/trainset_protein_embeddings.pt")
 
     residue_emb = {}
     prot_emb = {}
@@ -290,13 +266,14 @@ def main():
 
         seq_dict = { k : v for k,v in zip(ids, seqs) }
 
-        embeddings = get_embeddings(model, tokenizer, device, seq_dict, per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
+        embeddings = get_embeddings(device, seq_dict, max_batch=1024, max_residues=5000,
+                                    per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
         residue_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["residue_embs"].items()})
         prot_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["protein_embs"].items()})
 
-
-    torch.save(obj=residue_emb, f="training_dataset/testset_residue_embeddings.pt")
-    torch.save(obj=prot_emb, f="training_dataset/testset_protein_embeddings.pt")
+    print(f"Number of residue embeddings : {len(residue_emb)}")
+    torch.save(obj=residue_emb, f="../training_dataset/testset_residue_embeddings.pt")
+    torch.save(obj=prot_emb, f="../training_dataset/testset_protein_embeddings.pt")
 
 
 
