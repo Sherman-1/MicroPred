@@ -95,6 +95,10 @@ git clone --branch v0.2.0 https://github.com/google/sentencepiece.git /sentencep
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
     export CUDA_HOME="/usr/local/cuda"
 
+    # In case MIG is enabled on the host system, 
+    # cuda can't detect devices. Suppress if causing trouble
+    export CUDA_VISIBLE_DEVICES=0 
+
 
 %runscript 
     cowsay "Incroyable !"

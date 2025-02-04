@@ -76,7 +76,7 @@ class ScaledDotProductAttention(nn.Module):
 
         return output, attn
 
-class MultiHeadAttentionBouGui(nn.Module):
+class MultiHeadAttention(nn.Module):
 
     """
     See: https://einops.rocks/pytorch-examples.html
@@ -251,7 +251,7 @@ class MultiHeadAttentionBouGui(nn.Module):
             output = self.layer_norm(output)
         return output, attn
 
-class MHAP(nn.Module):
+class MHAPooling(nn.Module):
     """
     MultiheadAttention Pooling (mhap)
     >>> nres = 35
@@ -282,12 +282,12 @@ class MHAP(nn.Module):
     """
     def __init__(self, embed_dim:int, d_out:int=None, n_head:int=8, dropout:float=0.1, 
                  attn_dropout:float = 0.1):
-        super(MHAP, self).__init__()
+        super(MHAPooling, self).__init__()
 
         if d_out is None: 
             d_out = embed_dim
 
-        self.attention = MultiHeadAttentionBouGui(d_model=embed_dim, 
+        self.attention = MultiHeadAttention(d_model=embed_dim, 
                                                n_head=n_head,  
                                                dropout=dropout, 
                                                attn_dropout=attn_dropout,
@@ -342,7 +342,7 @@ class MHAP_MLP(nn.Module):
     """
     def __init__(self, input_embed_dim: int, num_classes: int, output_embed_dim:int=None):
         super(MHAP_MLP, self).__init__()
-        self.mhap = MHAP(embed_dim=input_embed_dim, d_out = output_embed_dim)
+        self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim)
         self.mlp = MLP(input_shape=output_embed_dim, output_shape=num_classes)
 
     def forward(self, embeddings, mask):
@@ -350,94 +350,6 @@ class MHAP_MLP(nn.Module):
         mlp_output = self.mlp(attn_output)             
         return mlp_output
 
-class ProtTransDataset(Dataset):
-
-    """
-    >>> ds = ProtTransDataset(ptfile="datasets/test_data.pt")
-
-    single
-    >>> embed, class_id, name = ds[0]
-    >>> embed.shape # Shortest sequence of the test set is 23
-    torch.Size([23, 1024])
-    >>> class_id.shape
-    torch.Size([5])
-    >>> name
-    'EPGN_HUMAN_A_1_elong_first'
-
-    batch
-    >>> dl = DataLoader(ds, batch_size = 3, collate_fn = padding_collate)
-    >>> first_batch = next(iter(dl))
-    >>> embeds, class_ids, masks, names = first_batch
-    >>> embeds.shape # 84 Longest seq of the first batch ( shortest sequences of the set )
-    torch.Size([3, 84, 1024])
-    >>> class_ids.shape # Batch of 3, 5 classes in the set
-    torch.Size([3, 5])
-    >>> len(names)
-    3
-    >>> masks.shape # 3 masks, each mask is relative to the length of the longest seq of the batch
-    torch.Size([3, 84])
-    """
-    
-    def __init__(self, ptfile, num_classes = 5, return_one_hot = True):
-        
-        self.data = torch.load(f=ptfile, weights_only=False)
-        self.names = list(self.data.keys())
-        self.targets = [self.data[name]["class_type"] for name in self.names]
-        self.num_classes = num_classes
-        self.return_one_hot = return_one_hot
-
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-
-        name = self.names[idx]
-        embedding = self.data[name]["embedding"]
-        class_type = self.data[name]["class_type"]
-
-        class_id = CLASS_TO_INT[class_type]
-        
-        if self.return_one_hot:
-            one_hot = torch.nn.functional.one_hot(torch.tensor(class_id), self.num_classes).float()
-            return embedding, one_hot, name
-        else:
-            return embedding, torch.tensor(class_id), name
-
-def padding_collate(batch):
-    """
-    >>> batch = [(torch.rand(30, 1024), torch.tensor([1,0,0]), "oui"), (torch.rand(56, 1024), torch.tensor([0,0,1]), "non")]
-    >>> [e[0].shape for e in batch]
-    [torch.Size([30, 1024]), torch.Size([56, 1024])]
-    >>> embeddings, class_id, mask, names = padding_collate(batch)
-    >>> embeddings.shape
-    torch.Size([2, 56, 1024])
-    >>> class_id.shape
-    torch.Size([2, 3])
-    >>> mask.shape 
-    torch.Size([2, 56])
-    >>> mask.sum() == 26
-    tensor(True)
-    >>> names
-    ['oui', 'non']
-    """
-
-    embeddings = [e[0] for e in batch]
-    class_id = torch.stack([e[1] for e in batch])
-    names = [e[2] for e in batch]
-
-    maxlen = max([len(e) for e in embeddings])
-    mask = []
-    
-    for e in embeddings:
-        p = torch.zeros(len(e), dtype = bool)
-        p = F.pad(p, (0, maxlen-len(e)), value = True)
-        mask.append(p)
-    mask = torch.stack(mask)
-
-    embeddings = torch.stack([F.pad(e, (0, 0, 0, maxlen-len(e))) for e in embeddings], dim=0)
-
-    return embeddings, class_id, mask, names
 
 if __name__ == "__main__":
 
@@ -469,92 +381,3 @@ if __name__ == "__main__":
 
         sys.exit()
         
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-
-
-    epochs = 10
-    lr = 0.001
-    batch_size = 512
-
-    # def __init__(self, embed_dim:int, d_out:int=None, n_head:int=8, dropout:float=0.1, 
-    #            attn_dropout:float = 0.1):
-
-    data = ProtTransDataset(ptfile="datasets/train_data.pt")
-    dataloader = DataLoader(data, collate_fn=padding_collate, batch_size=batch_size, shuffle=True)
-    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=128, num_classes=5).to(device)
-
-    data_val = ProtTransDataset(ptfile="datasets/test_data.pt")
-    dataloader_val = DataLoader(data_val, collate_fn=padding_collate, batch_size=batch_size, shuffle=True)
-
-
-    criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr) 
-    losses = list()
-    val_losses = list()
-    val_iter = iter(dataloader_val)
-
-    for epoch in tqdm(range(epochs), desc="Epochs"):
-
-        loss_tmp = list()
-        for i, batch in tqdm(enumerate(dataloader), desc="Batches", total=len(dataloader)):
-
-            model.train()    
-            embeddings, class_id, mask, ids = batch
-
-            embeddings = embeddings.to(device)
-            mask = mask.to(device)
-            class_id = class_id.to(device)
-            
-            optimizer.zero_grad()
-
-            output = model(embeddings, mask)
-            loss = criterion(output, class_id)
-            loss.backward()
-            
-            optimizer.step()
-
-            with torch.no_grad():
-
-                model.eval()
-                try:
-                    batch_val = next(val_iter)
-
-                # Go through iter once
-                except StopIteration:
-
-                    val_iter = iter(dataloader_val)
-                    batch_val = next(val_iter)
-
-                embed_val, class_id_val, mask_val, ids_val = batch_val
-                embed_val = embed_val.to(device)
-                class_id_val = class_id_val.to(device)
-                mask_val = mask_val.to(device)
-                output_val = model(embed_val, mask_val)
-                loss_val = criterion(output_val, class_id_val)
-                val_losses.append(loss_val.item())
-
-                print(f"{epoch=}")
-                print(f"step={i}")
-                print(f"{loss=:.4g}")
-                print(f"{loss_val=:.4g}")
-                print("--")
-
-            losses.append(loss.item())
-
-               
-        
-        torch.save(model.state_dict(), f"models/101224_MHAP_MLP_BCE_reduce_embeds_epoch_{epoch}.pt")
-
-
-    import matplotlib.pyplot as plt
-
-    plt.figure()
-    plt.plot(val_losses, label = "Validation loss")
-    plt.plot(losses, label = "Loss")
-    plt.legend()
-    plt.savefig("101224_MHAP_MLP_BCE_reduce_embeds_losses.png")

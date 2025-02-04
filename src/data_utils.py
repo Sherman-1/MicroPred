@@ -1,12 +1,37 @@
 from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
 import torch 
+import torch.nn.functional as F
+
+CLASSES = [
+    
+    "molten",
+    "globular",
+    "bitopic",
+    "polytopic",
+    "disprot",
+    "iORFs",
+    "random_uniprot",
+    "scer_20_100",
+    "PFAL_CDS_20_100",
+    "ATHA_CDS_20_100",
+    "MMUS_CDS_20_100",
+    "HSAP_CDS_20_100",
+    "DMEL_CDS_20_100",
+    "CELE_CDS_20_100",
+    "OSAT_CDS_20_100",
+    "TREMBL_MICROPROTEINS"
+]
+
+CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES)))) 
+INT_TO_CLASS = dict(zip(range(len(CLASSES)), CLASSES))
 
 
 def create_dataset_from_sequences(tokenizer, seqs, labels, max_seq_length=1024):
     tokenized = tokenizer(seqs, max_length=max_seq_length, padding="max_length", truncation=True)
     tokenized["labels"] = labels
     return HFDataset.from_dict(tokenized)
+
 
 class SeqProtT5Dataset(Dataset):
     def __init__(self, hf_dataset):
@@ -110,3 +135,33 @@ def padding_collate(batch):
     embeddings = torch.stack([F.pad(e, (0, 0, 0, maxlen-len(e))) for e in embeddings], dim=0)
 
     return embeddings, class_id, mask, names
+
+if __name__ == "__main__":
+
+    import argparse
+    import doctest
+    import sys
+
+    
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("--test", help="Test the code", action="store_true")
+    parser.add_argument("--func", help="Test only the given function(s)", nargs="+")
+    args = parser.parse_args()
+
+    if args.test:
+        if args.func is None:
+            doctest.testmod(
+                optionflags=doctest.ELLIPSIS | doctest.REPORT_ONLY_FIRST_FAILURE | doctest.REPORT_NDIFF
+            )
+        else:
+            for f in args.func:
+                print(f"Testing {f}")
+                f = getattr(sys.modules[__name__], f)   
+
+                doctest.run_docstring_examples(
+                    f,
+                    globals(),
+                    optionflags=doctest.ELLIPSIS | doctest.REPORT_ONLY_FIRST_FAILURE | doctest.REPORT_NDIFF,
+                )
+
+        sys.exit()
