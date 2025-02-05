@@ -123,12 +123,11 @@ class EmbedProtT5Dataset(Dataset):
     
     def _get_class_weights(self):
 
-        weights_vector = compute_class_weight(y = self.targets, 
-                                                  class_weight = "balanced", 
-                                                  classes = np.sort(np.unique(self.targets)) # Sort to match CLASS_TO_INT
-                                                )
-        return { i : weight for (i, weight) in enumerate(weights_vector) }
-
+        return compute_class_weight(y = self.targets, 
+                                    class_weight = "balanced", 
+                                    classes = np.sort(np.unique(self.targets)) # Sort to match CLASS_TO_INT
+                                )
+        
 
 
 def padding_collate(batch):

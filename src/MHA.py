@@ -301,54 +301,24 @@ class MHAPooling(nn.Module):
         attn_output, attn_output_weights = self.attention(q=Qi, k=embeddings, v=embeddings, key_padding_mask = masks)
         return torch.atleast_2d(torch.squeeze(attn_output)), attn_output_weights
 
+import torch
+import torch.nn as nn
+
 class MLP(nn.Module):
-
-    def __init__(self, input_shape, output_shape, dropout_rate=0.2):
+    def __init__(self, input_dim, output_dim, hidden_dim=512, dropout=0.3):
         super(MLP, self).__init__()
-
         self.model = nn.Sequential(
-            
-            nn.Linear(input_shape, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-
-            nn.Linear(64, 32),
-            nn.BatchNorm1d(32),
+            nn.Dropout(dropout),  
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-
-            nn.Linear(32, 16),
-            nn.BatchNorm1d(16),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(16, output_shape),
-            nn.Sigmoid()
-
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim)  
         )
 
     def forward(self, x):
         return self.model(x)
-
-class MHAP_MLP(nn.Module):
-    """
-    forward batch:
-    >>> batch = torch.rand([64, 36, 1024])
-    >>> batch.shape
-    torch.Size([64, 36, 1024])
-    >>> mhap_mlp = MHAP_MLP(input_embed_dim = 1024, output_embed_dim = 128, num_classes = 5)
-    >>> mlp_output = mhap_mlp.forward(batch, mask = None)
-    >>> mlp_output.shape
-    torch.Size([64, 5])
-    """
-    def __init__(self, input_embed_dim: int, num_classes: int, output_embed_dim:int=None):
-        super(MHAP_MLP, self).__init__()
-        self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim)
-        self.mlp = MLP(input_shape=output_embed_dim, output_shape=num_classes)
-
-    def forward(self, embeddings, mask):
-        attn_output, _ = self.mhap(embeddings, mask)  
-        mlp_output = self.mlp(attn_output)             
-        return mlp_output
 
 
 if __name__ == "__main__":
