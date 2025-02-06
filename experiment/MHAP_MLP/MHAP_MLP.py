@@ -1,7 +1,19 @@
-from ..src import MHAPooling, MLP 
+import sys
+from pathlib import Path
 
-import torch.nn as nn 
+current_dir = Path(__file__).resolve().parent
+root_dir = current_dir.parent.parent  
+src_path = root_dir / 'src'
+sys.path.append(str(src_path))
 
+from MHA import MHAPooling, MLP, INT_TO_CLASS
+from utils import Trainer
+from data_utils import get_dataloaders, padding_collate
+
+import polars as pl 
+import torch 
+from torch.utils.data import DataLoader
+import torch.nn as nn
 
 class MHAP_MLP(nn.Module):
     """
@@ -17,13 +29,43 @@ class MHAP_MLP(nn.Module):
     def __init__(self, input_embed_dim: int, num_classes: int, output_embed_dim:int=None):
         super(MHAP_MLP, self).__init__()
         self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim)
-        self.mlp = MLP(input_shape=output_embed_dim, output_shape=num_classes)
+        self.mlp = MLP(input_dim=output_embed_dim, output_dim=num_classes)
 
     def forward(self, embeddings, mask):
         attn_output, _ = self.mhap(embeddings, mask)  
         mlp_output = self.mlp(attn_output)             
         return mlp_output
     
+
+def main():
+
+    device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
+
+    train_dl, val_dl, class_weights = get_dataloaders(collate_fn = padding_collate)
+
+    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=64, num_classes=5)
+
+    params = {
+
+        "train_dl" : train_dl,
+        "val_dl" : val_dl,
+        "model" : model,
+        "loss_fn" : nn.CrossEntropyLoss(class_weights).to(device),
+        "optimizer" : torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2),
+        "epochs" : 100,
+        "scheduler" : None,
+        "logging" : False,
+        "val_interval_batches" : 10,
+        "grad_accum_steps" : 1, # Just don't
+        "output_path" : None
+
+    }
+
+    wandb_project = "MHAP MLP"
+    
+    trainer = Trainer(**params, wandb_config=params, wandb_project=wandb_project)
+
+    trainer.train()
 
 
 if __name__ == "__main__":
@@ -55,3 +97,5 @@ if __name__ == "__main__":
                 )
 
         sys.exit()
+
+    main()

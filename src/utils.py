@@ -3,6 +3,7 @@ import numpy as np
 import random 
 from transformers import set_seed
 import wandb
+from tqdm import tqdm
 
 
 def set_seeds(s):
@@ -25,13 +26,10 @@ def check_model_on_gpu(model):
     else:
         exit("❌ Some parameters are still on CPU")
 
-import torch
-import wandb
-
 class Trainer:
     def __init__(
         self,
-        model,
+        model : torch.nn.Module,
         train_dl,
         val_dl=None,
         optimizer=None,
@@ -42,8 +40,8 @@ class Trainer:
         logging=False,
         wandb_project="default_project",
         wandb_config=None,
-        val_interval_batches=None,  # Compute validation every N batches if set
-        grad_accum_steps=1,         # Number of mini-batches to accumulate gradients over
+        val_interval_batches=None,  
+        grad_accum_steps=1,         
         output_path = None,
 
     ):
@@ -64,7 +62,6 @@ class Trainer:
             val_interval_batches (int, optional): Frequency (in batches) to compute and log validation loss during training.
             grad_accum_steps (int, optional): Number of mini-batches over which to accumulate gradients before performing an optimizer step.
         """
-        # Determine device
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
@@ -88,6 +85,10 @@ class Trainer:
             wandb.init(project=wandb_project, config=wandb_config)
             wandb.watch(self.model, log="all")
 
+        assert self.device != "cpu", "Model running on CPU ? Not today"
+
+        self.model = self.model.to(device)
+
     def compute_validation(self):
         """Computes the validation loss and accuracy over the entire validation set."""
         self.model.eval()
@@ -96,7 +97,7 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for data, target in self.val_dl:
+            for data, target, one_hot_target, name in self.val_dl:
                 data, target = data.to(self.device), target.to(self.device)
                 outputs = self.model(data)
                 loss = self.loss_fn(outputs, target)
@@ -118,8 +119,7 @@ class Trainer:
         if self.logging:
             wandb.log({
                 "val_loss": val_loss,
-                "val_accuracy": accuracy,
-                "epoch": epoch
+                "val_accuracy": accuracy
             })
 
     def train(self):
@@ -128,12 +128,14 @@ class Trainer:
         best_val_loss = float("inf")
         best_epoch = -1 
 
-        for epoch in range(1, self.epochs + 1):
+        for epoch in tqdm(range(1, self.epochs + 1), desc = "Epoch", total = self.epochs, leave = False):
+
             self.model.train()
             running_loss = 0.0
             self.optimizer.zero_grad()
 
-            for batch_idx, (data, target) in enumerate(self.train_dl, start=1):
+            for batch_idx, (data, target, one_hot_target, name) in enumerate(self.train_dl, start=1):
+
                 data, target = data.to(self.device), target.to(self.device)
 
                 outputs = self.model(data)
@@ -148,20 +150,18 @@ class Trainer:
 
                 if self.logging:
                     wandb.log({
-                        "batch_loss": loss.item() * self.grad_accum_steps, 
-                        "epoch": epoch,
+                        "batch_loss": loss.item() * self.grad_accum_steps,
                         "batch": batch_idx
                     })
 
+                
                 if (self.val_dl is not None and self.val_interval_batches is not None and 
                     batch_idx % self.val_interval_batches == 0):
                     val_loss, accuracy = self.compute_validation()
-                    print(f"Epoch {epoch}, Batch {batch_idx} - Val Loss: {val_loss:.4f} | Val Accuracy: {accuracy:.4f}")
                     if self.logging:
                         wandb.log({
                             "val_loss_batch": val_loss,
                             "val_accuracy_batch": accuracy,
-                            "epoch": epoch,
                             "batch": batch_idx
                         })
 
@@ -177,7 +177,6 @@ class Trainer:
 
             if self.val_dl:
                 val_loss, accuracy = self.compute_validation()
-                print(f"Epoch {epoch} - Validation Loss: {val_loss:.4f} | Accuracy: {accuracy:.4f}")
                 if self.logging:
                     wandb.log({
                         "val_loss": val_loss,

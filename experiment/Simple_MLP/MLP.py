@@ -8,65 +8,46 @@ sys.path.append(str(src_path))
 
 from MHA import MLP, INT_TO_CLASS
 from utils import Trainer
-from data_utils import EmbedProtT5Dataset
+from data_utils import get_dataloaders
 
 import polars as pl 
 import torch 
 from torch.utils.data import DataLoader
 import torch.nn as nn
 
-device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
-
-train_ds = EmbedProtT5Dataset(ptfile="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/testset_protein_embeddings.pt",
-                        num_classes = 5)
-
-val_ds = EmbedProtT5Dataset(ptfile="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/testset_protein_embeddings.pt",
-                        num_classes = 5)
-
-class_weight_dict = val_ds.class_weights 
+import copy
 
 
+def main():
 
+    device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
-train_dl = DataLoader(train_ds, batch_size = 20000, shuffle = True)
-val_dl = DataLoader(val_ds, batch_size=1024)
+    train_dl, val_dl, class_weights = get_dataloaders()
 
+    model = MLP(1024, len(class_weights)).to(device)
 
-input_shape = next(iter(train_dl))[0].shape[1] 
-output_shape = len(class_weight_dict)
+    params = {
 
+        "train_dl" : train_dl,
+        "val_dl" : val_dl,
+        "model" : model,
+        "loss_fn" : nn.CrossEntropyLoss(class_weights).to(device),
+        "optimizer" : torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2),
+        "epochs" : 100,
+        "scheduler" : None,
+        "logging" : True,
+        "val_interval_batches" : 10,
+        "grad_accum_steps" : 1, # Just don't
+        "output_path" : None
 
-model = MLP(input_shape, output_shape).to(device)
-loss = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2)
+    }
 
-for batch in train_dl: 
+    wandb_project = "Simple MLP"
+    
+    trainer = Trainer(**params, wandb_config=params, wandb_project=wandb_project)
 
-    embedding, one_hot, class_type, name = batch 
+    trainer.train()
 
-    # Assume embeddings is a (batch_size, embedding_dim) tensor
-    embedding_norms = torch.norm(embedding, p=2, dim=1)  # Compute L2 norm for each embedding
-    print("Mean norm:", embedding_norms.mean().item())
-    print("Std dev of norm:", embedding_norms.std().item())
+if __name__ == "__main__":
 
-    break
-
-
-
-"""
- self,
-        model,
-        train_dl,
-        val_dl=None,
-        optimizer=None,
-        loss_fn=None,
-        epochs=10,
-        scheduler=None,
-        device=None,
-        logging=False,
-        wandb_project="default_project",
-        wandb_config=None,
-        val_interval_batches=None,  # Compute validation every N batches if set
-        grad_accum_steps=1,         # Number of mini-batches to accumulate gradients over
-        output_path = None,
-"""
+    main()

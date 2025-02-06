@@ -308,6 +308,7 @@ class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim=512, dropout=0.3):
         super(MLP, self).__init__()
         self.model = nn.Sequential(
+            
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),  
