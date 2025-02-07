@@ -44,8 +44,6 @@ class ConvNet( torch.nn.Module ):
         diso_Yhat = self.diso_classifier(  x ).squeeze(dim=-1).permute(0,2,1) # OUT: (B x L x 2)
         return d3_Yhat, d8_Yhat, diso_Yhat
 
-import torch
-
 def load_sec_struct_model(device):
     """
     Downloads and loads the secondary structure prediction model.
@@ -74,7 +72,6 @@ def load_sec_struct_model(device):
 
     return model
 
-
 def write_prediction_fasta(predictions, out_path):
     class_mapping = {0:"H",1:"E",2:"L"}
     with open(out_path, 'w+') as out_f:
@@ -85,7 +82,6 @@ def write_prediction_fasta(predictions, out_path):
             ]
             ) )
     return None
-
 
 def get_T5_model(device):
 
@@ -101,7 +97,6 @@ def get_T5_model(device):
         model.to(torch.float32)
 
     return model, tokenizer
-
 
 def read_fasta( fasta_path ):
     '''
@@ -137,7 +132,6 @@ def read_fasta( fasta_path ):
         del sequences[key]
                 
     return sequences
-
 
 def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_protein: bool, sec_struct : bool,
                    max_residues=4000, max_seq_len=1000, max_batch=100 ):
@@ -217,8 +211,6 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
     print('\n############# END #############')
 
     return results
-
-
 
 def main(): 
 

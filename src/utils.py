@@ -43,6 +43,7 @@ class Trainer:
         val_interval_batches=None,  
         grad_accum_steps=1,         
         output_path = None,
+        debug = False
 
     ):
         """
@@ -78,6 +79,7 @@ class Trainer:
         self.grad_accum_steps = grad_accum_steps
         self.output_path = output_path
         self.logging = logging
+        self.debug = debug
 
         if self.logging:
             if wandb_config is None:
@@ -97,9 +99,9 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for data, target, one_hot_target, name in self.val_dl:
-                data, target = data.to(self.device), target.to(self.device)
-                outputs = self.model(data)
+            for data, target, one_hot, mask, names in self.val_dl:
+                data, mask, target = data.to(self.device), mask.to(self.device), target.to(self.device)
+                outputs = self.model(data, mask)
                 loss = self.loss_fn(outputs, target)
                 total_loss += loss.item()
 
@@ -134,11 +136,11 @@ class Trainer:
             running_loss = 0.0
             self.optimizer.zero_grad()
 
-            for batch_idx, (data, target, one_hot_target, name) in enumerate(self.train_dl, start=1):
+            for batch_idx, (data, target, one_hot, mask, names) in enumerate(self.train_dl, start=1):
 
-                data, target = data.to(self.device), target.to(self.device)
+                data, mask, target = data.to(self.device), mask.to(self.device), target.to(self.device)
 
-                outputs = self.model(data)
+                outputs = self.model(data, mask)
                 loss = self.loss_fn(outputs, target) / self.grad_accum_steps
                 loss.backward()
 
@@ -189,6 +191,10 @@ class Trainer:
                     best_epoch = epoch
                     print(f"New best model found at epoch {epoch} with val loss {val_loss:.4f}. Saving checkpoint.")
                     self.save_checkpoint("best_model_checkpoint.pth", self.output_path)
+
+            if self.debug:
+                print("Incroyable")
+                break
 
     def save_checkpoint(self, path):
         """Saves the model and optimizer states."""

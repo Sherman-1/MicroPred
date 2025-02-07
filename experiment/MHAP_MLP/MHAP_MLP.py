@@ -41,9 +41,11 @@ def main():
 
     device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
-    train_dl, val_dl, class_weights = get_dataloaders(collate_fn = padding_collate)
+    print(f"#################### CUDA device detected ! ####################")
 
-    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=64, num_classes=5)
+    train_dl, val_dl, class_weights = get_dataloaders(collate_fn = padding_collate, type = "residue")
+
+    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=124, num_classes=5)
 
     params = {
 
@@ -57,12 +59,15 @@ def main():
         "logging" : False,
         "val_interval_batches" : 10,
         "grad_accum_steps" : 1, # Just don't
-        "output_path" : None
+        "output_path" : None,
+        "debug" : True
 
     }
 
     wandb_project = "MHAP MLP"
     
+    print(f"Starting training ... ")
+
     trainer = Trainer(**params, wandb_config=params, wandb_project=wandb_project)
 
     trainer.train()

@@ -8,6 +8,8 @@ from sklearn.utils.class_weight import compute_class_weight
 
 import numpy as np
 
+from pathlib import Path
+
 CLASSES = [
     
     "molten",
@@ -55,7 +57,7 @@ class SeqProtT5Dataset(Dataset):
 class EmbedProtT5Dataset(Dataset):
 
     """
-    >>> ds = ResidueEmbedProtT5Dataset(ptfile="datasets/test_data.pt")
+    >>> ds = EmbedProtT5Dataset(ptfile="datasets/test_data.pt")
 
     single
     >>> embed, class_id, name = ds[0]
@@ -88,9 +90,7 @@ class EmbedProtT5Dataset(Dataset):
 
         targets = [self.data[name]["class_type"] for name in self.names]
 
-        if all(isinstance(target, type(targets[0])) for target in targets):
-            print(f"All targets are of type {type(targets[0])}.")
-        else:
+        if not all(isinstance(target, type(targets[0])) for target in targets):
             raise ValueError("Targets contain mixed datatypes.")
 
         if type(targets[0]) == str:
@@ -126,8 +126,6 @@ class EmbedProtT5Dataset(Dataset):
         one_hot_target = torch.nn.functional.one_hot(target, self.num_classes).float()
 
         return embedding, target, one_hot_target, name
-
-
     
     def _get_class_weights(self):
 
@@ -136,6 +134,7 @@ class EmbedProtT5Dataset(Dataset):
                                     classes = np.sort(np.unique(self.targets)) # Sort to match CLASS_TO_INT
                                 )
         
+
 
 
 def padding_collate(batch):
@@ -158,35 +157,77 @@ def padding_collate(batch):
 
     embeddings = [e[0] for e in batch]
     class_id = torch.stack([e[1] for e in batch])
-    names = [e[2] for e in batch]
+    one_hot = torch.stack([e[2] for e in batch])
+    names = [e[3] for e in batch]
 
     maxlen = max([len(e) for e in embeddings])
     mask = []
     
     for e in embeddings:
-        p = torch.zeros(len(e), dtype=bool)
-        pad_size = maxlen - len(e)
-        if pad_size < 0:
-            raise ValueError(f"Negative padding: maxlen={maxlen}, len(e)={len(e)}")  # Debugging line
-        p = F.pad(p, (0, pad_size), value=True)
+        p = torch.zeros(len(e), dtype = bool)
+        p = F.pad(p, (0, maxlen-len(e)), value = True)
         mask.append(p)
-
+    mask = torch.stack(mask)
 
     embeddings = torch.stack([F.pad(e, (0, 0, 0, maxlen-len(e))) for e in embeddings], dim=0)
 
-    return embeddings, class_id, mask, names
+    return embeddings, class_id, one_hot, mask, names
 
-def get_dataloaders(train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/trainset_protein_embeddings.pt", 
-                    val_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/testset_protein_embeddings.pt", 
+def get_dataloaders(base_train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset", 
+                    base_val_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset", 
                     num_classes = 5, 
                     batch_size_train=512, 
                     batch_size_val=512,
-                    collate_fn = None):
+                    collate_fn = None,
+                    type = "residue"):
 
 
-    """Loads datasets and returns their corresponding DataLoaders."""
+    """
+    >>> import io
+    >>> fake_data = {
+    ...     "EPGN_HUMAN_A_1": {"embedding": torch.rand(23, 1024), "class_type": "bitopic"},
+    ...     "XYZ_HUMAN_B_2": {"embedding": torch.rand(50, 1024), "class_type": "polytopic"},
+    ...     "LMN_MOUSE_C_3": {"embedding": torch.rand(64, 1024), "class_type": "molten"},
+    ...     "LMN_MOUSE_C_4": {"embedding": torch.rand(44, 1024), "class_type": "globular"},
+    ...     "LMN_MOUSE_C_5": {"embedding": torch.rand(99, 1024), "class_type": "disprot"},
+    ...     "LMN_MOUSE_C_6": {"embedding": torch.rand(100, 1024), "class_type": "disprot"}
+    ... }
+    >>> fake_data = {k: v for k, v in sorted(fake_data.items(), key=lambda item: item[1]["embedding"].shape[0])}
+    >>> byte_stream = io.BytesIO()
+    >>> torch.save(fake_data, byte_stream)
+    >>> _ = byte_stream.seek(0)
+    >>> ds = EmbedProtT5Dataset(byte_stream, num_classes=5)
+    >>> embed, class_id, one_hot, name = ds[0]
+    >>> embed.shape
+    torch.Size([23, 1024])
+    >>> class_id
+    tensor(2)
+    >>> name
+    'EPGN_HUMAN_A_1'
+
+    >>> dl = DataLoader(ds, batch_size = 2, collate_fn = padding_collate)
+    >>> embeds, class_id, one_hot, mask, name = next(iter(dl))
+    >>> one_hot.shape # 5 classes, 2 points
+    torch.Size([2, 5])
+    >>> mask.shape
+    torch.Size([2, 44])
+    """
+
+
+
+    assert type in ["residue","protein"], "Per protein or per residue embedding needed as input"
+
+    print(f" Preparing data ... ")
+
+    train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/trainset_residue_embeddings.pt"
+    val_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/testset_residue_embeddings.pt"
+
+    print("         Loading datasets ")
+
     train_ds = EmbedProtT5Dataset(ptfile=train_path, num_classes=num_classes)
     val_ds = EmbedProtT5Dataset(ptfile=val_path, num_classes=num_classes)
+
+    print("         Defining dataloaders")
 
     train_dl = DataLoader(train_ds, batch_size=batch_size_train, shuffle=True, collate_fn = collate_fn)
     val_dl = DataLoader(val_ds, batch_size=batch_size_val, shuffle=True, collate_fn = collate_fn)
@@ -214,10 +255,10 @@ if __name__ == "__main__":
         else:
             for f in args.func:
                 print(f"Testing {f}")
-                f = getattr(sys.modules[__name__], f)   
+                func = getattr(sys.modules[__name__], f)   
 
                 doctest.run_docstring_examples(
-                    f,
+                    func,
                     globals(),
                     optionflags=doctest.ELLIPSIS | doctest.REPORT_ONLY_FIRST_FAILURE | doctest.REPORT_NDIFF,
                 )
