@@ -152,7 +152,7 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
     model, tokenizer = get_T5_model(device)
     
     if sec_struct:
-        print("🛠 Loading secondary structure model...")
+        print("Loading secondary structure model...")
         sec_struct_model = load_sec_struct_model(device)
 
 

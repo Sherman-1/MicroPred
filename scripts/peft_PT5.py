@@ -48,11 +48,6 @@ wandb.init(project="ProtT5_Finetuning",
 if not torch.cuda.is_available() : exit("Cuda compatible GPU not found")
 
 
-def create_dataset(tokenizer, seqs, labels):
-    tokenized = tokenizer(seqs, max_length=MAX_SEQ_LENGTH, padding="max_length", truncation=True)
-    tokenized["labels"] = labels
-    return HFDataset.from_dict(tokenized)
-
 class ProtT5Dataset(Dataset):
     def __init__(self, hf_dataset):
         self.hf_dataset = hf_dataset  
@@ -62,9 +57,11 @@ class ProtT5Dataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.hf_dataset[idx]
-        item = {key: torch.tensor(val) for key, val in sample.items()}
-        item["labels"] = torch.tensor(sample["labels"], dtype=torch.long)
-        return item
+        
+        input_ids = torch.tensor(sample["input_ids"], dtype=torch.long)
+        labels = torch.tensor(sample["labels"], dtype=torch.long)
+
+        return input_ids, labels
     
 class ProtT5Classifier(nn.Module):
     def __init__(self, base_model, num_classes):
@@ -105,6 +102,10 @@ LORA_CONFIG = LoraConfig(
     task_type=TaskType.FEATURE_EXTRACTION  
 )
 
+def create_dataset(tokenizer, seqs, labels):
+    tokenized = tokenizer(seqs, max_length=MAX_SEQ_LENGTH, padding="max_length", truncation=True)
+    tokenized["labels"] = labels
+    return HFDataset.from_dict(tokenized)
 
 
 hf_train_dataset = create_dataset(tokenizer, train_data["sequence"].to_list(), train_data["category"].to_list())
@@ -113,7 +114,7 @@ train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 hf_test_dataset = create_dataset(tokenizer, test_data["sequence"].to_list(), test_data["category"].to_list())
 test_dataset = ProtT5Dataset(hf_test_dataset)
-test_loader = DataLoader(test_dataset, batch_size=128, shuffle=True) # Since no grad accum ?
+test_loader = DataLoader(test_dataset, batch_size=128, shuffle=True) 
 
 BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float16).to(DEVICE)
 PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)

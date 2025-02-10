@@ -7,7 +7,7 @@ src_path = root_dir / 'src'
 sys.path.append(str(src_path))
 
 from MHA import MLP, INT_TO_CLASS
-from utils import Trainer
+from utils import Trainer, compute_sklearn_metrics
 from data_utils import get_dataloaders
 
 import polars as pl 
@@ -15,14 +15,17 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
 
-import copy
 
 
 def main():
 
     device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
-    train_dl, val_dl, class_weights = get_dataloaders()
+    assert device == "cuda", "#################### CUDA device not detected ! ####################"
+
+    print(f"#################### CUDA device detected ! ####################")
+
+    train_dl, val_dl, class_weights = get_dataloaders(embed_type = "protein", collate_fn = None)
 
     model = MLP(1024, len(class_weights)).to(device)
 
@@ -33,13 +36,12 @@ def main():
         "model" : model,
         "loss_fn" : nn.CrossEntropyLoss(class_weights).to(device),
         "optimizer" : torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2),
-        "epochs" : 100,
+        "epochs" : 200,
         "scheduler" : None,
         "logging" : True,
-        "val_interval_batches" : 10,
         "grad_accum_steps" : 1, # Just don't
-        "output_path" : None
-
+        "output_path" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/MLP.pth",
+        "use_amp" : False
     }
 
     wandb_project = "Simple MLP"
@@ -47,6 +49,8 @@ def main():
     trainer = Trainer(**params, wandb_config=params, wandb_project=wandb_project)
 
     trainer.train()
+
+    compute_sklearn_metrics(model, val_dl, device)
 
 if __name__ == "__main__":
 

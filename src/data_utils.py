@@ -53,7 +53,6 @@ class SeqProtT5Dataset(Dataset):
         item["labels"] = torch.tensor(sample["labels"], dtype=torch.long)
         return item
     
-
 class EmbedProtT5Dataset(Dataset):
 
     """
@@ -134,9 +133,6 @@ class EmbedProtT5Dataset(Dataset):
                                     classes = np.sort(np.unique(self.targets)) # Sort to match CLASS_TO_INT
                                 )
         
-
-
-
 def padding_collate(batch):
     """
     >>> batch = [(torch.rand(30, 1024), torch.tensor([1,0,0]), "oui"), (torch.rand(56, 1024), torch.tensor([0,0,1]), "non")]
@@ -179,7 +175,7 @@ def get_dataloaders(base_train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/M
                     batch_size_train=512, 
                     batch_size_val=512,
                     collate_fn = None,
-                    type = "residue"):
+                    embed_type = None):
 
 
     """
@@ -215,12 +211,17 @@ def get_dataloaders(base_train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/M
 
 
 
-    assert type in ["residue","protein"], "Per protein or per residue embedding needed as input"
+    assert embed_type in ["residue","protein"], "Per protein or per residue embedding needed as input"
 
     print(f" Preparing data ... ")
 
-    train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/trainset_residue_embeddings.pt"
-    val_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/testset_residue_embeddings.pt"
+    train_path = Path(base_train_path) / f"trainset_{embed_type}_embeddings.pt"
+    val_path = Path(base_train_path) / f"testset_{embed_type}_embeddings.pt"
+
+    if not (train_path.exists() and val_path.exists()):
+
+        raise FileNotFoundError("Training or Val dataset does not exist")
+
 
     print("         Loading datasets ")
 
@@ -232,6 +233,12 @@ def get_dataloaders(base_train_path = "/store/EQUIPES/BIM/MEMBERS/simon.herman/M
     train_dl = DataLoader(train_ds, batch_size=batch_size_train, shuffle=True, collate_fn = collate_fn)
     val_dl = DataLoader(val_ds, batch_size=batch_size_val, shuffle=True, collate_fn = collate_fn)
 
+    try: 
+        next(iter(train_dl))
+
+    except Exception as e:
+        print(f"Error while defining DataLoader :")
+        print(e)
     return train_dl, val_dl, train_ds.class_weights
 
 

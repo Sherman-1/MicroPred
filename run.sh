@@ -1,16 +1,22 @@
 #!/bin/bash
 
-#PBS -N PEFT_ProtTrans
+#PBS -N FineTune
+#PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
-#PBS -q bim
 #PBS -l walltime=30000:00:00
-#PBS -l mem=16Gb
-#PBS -l ncpus=8
+#PBS -l mem=32Gb
+#PBS -l ncpus=16
 #PBS -koed
 
 
 cd $PBS_O_WORKDIR
 
-apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ FT.sif python3 peft_PT5.py
+gpu_count=$(python3 -c "import torch; print(torch.cuda.device_count())")
+
+if [ "$gpu_count" -eq 0 ]; then
+    echo "No GPU available. Exiting ..."
+    exit 1
+fi
+apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/Singularity.sif python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/FT_MLP/FT_MLP.py
 

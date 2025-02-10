@@ -1,5 +1,6 @@
 *.sif
 **/__pycache__/
+**/training_dataset/
 **/wandb
 **/*.log
 **/*.pt 
@@ -9,6 +10,8 @@
 **/*.faa 
 **/*.csv 
 **/*.tsv
+**/*.[eo][0-9]*
+
 
 runs/
 data/raw_fastas

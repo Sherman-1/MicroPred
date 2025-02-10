@@ -30,11 +30,11 @@ CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES))))
 
 fastas = {
 
-    "bitopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/bitopic_representatives.fasta",
-    "polytopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/polytopic_representatives.fasta",
-    "disprot"  : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/disprot_representatives.fasta", 
-    "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/Small_full.fasta",
-    "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/training_dataset/S3_full_subset.fasta"
+    "bitopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/bitopic_representatives.fasta",
+    "polytopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/polytopic_representatives.fasta",
+    "disprot"  : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/disprot_representatives.fasta", 
+    "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/Small_full.fasta",
+    "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/S3_full_subset.fasta"
 
 }
 
@@ -58,11 +58,11 @@ df = pl.concat(dfs).with_columns(
     category = pl.col("category").replace_strict(CLASS_TO_INT)
 )
 
-df_train, df_test = train_test_split(df, test_size = 0.25, stratify=df[["category"]])
+df_train, df_test = train_test_split(df, test_size = 0.4, stratify=df[["category"]])
 
 
-df_train.write_csv("training_dataset/train_sequences.csv")
-df_test.write_csv("training_dataset/test_sequences")
+df_train.write_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train_sequences.csv")
+df_test.write_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/test_sequences")
 
 
 

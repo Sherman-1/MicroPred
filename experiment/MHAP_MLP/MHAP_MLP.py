@@ -29,7 +29,7 @@ class MHAP_MLP(nn.Module):
     def __init__(self, input_embed_dim: int, num_classes: int, output_embed_dim:int=None):
         super(MHAP_MLP, self).__init__()
         self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim)
-        self.mlp = MLP(input_dim=output_embed_dim, output_dim=num_classes)
+        self.mlp = MLP(input_dim=output_embed_dim, output_dim=num_classes, hidden_dim = 256)
 
     def forward(self, embeddings, mask):
         attn_output, _ = self.mhap(embeddings, mask)  
@@ -41,11 +41,13 @@ def main():
 
     device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
+    assert device == "cuda", "#################### CUDA device not detected ! ####################"
+
     print(f"#################### CUDA device detected ! ####################")
 
-    train_dl, val_dl, class_weights = get_dataloaders(collate_fn = padding_collate, type = "residue")
+    train_dl, val_dl, class_weights = get_dataloaders(collate_fn = padding_collate, embed_type = "residue", batch_size_train = 1024)
 
-    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=124, num_classes=5)
+    model = MHAP_MLP(input_embed_dim=1024, output_embed_dim=512, num_classes=5)
 
     params = {
 
@@ -56,11 +58,11 @@ def main():
         "optimizer" : torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-2),
         "epochs" : 100,
         "scheduler" : None,
-        "logging" : False,
-        "val_interval_batches" : 10,
+        "logging" : True,
         "grad_accum_steps" : 1, # Just don't
-        "output_path" : None,
-        "debug" : True
+        "output_path" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/MHAP_MLP_512_out_256_hidden.pth",
+        "debug" : False,
+        "use_amp" : False
 
     }
 
