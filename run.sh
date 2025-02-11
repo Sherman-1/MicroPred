@@ -18,5 +18,5 @@ if [ "$gpu_count" -eq 0 ]; then
     echo "No GPU available. Exiting ..."
     exit 1
 fi
-apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/Singularity.sif python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/FT_MLP/FT_MLP.py
+apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ --bind /scratchlocal/triton_cache /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/FT_MLP/DS_FT.py
 
