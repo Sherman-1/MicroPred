@@ -313,11 +313,12 @@ class MLP(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, output_dim)  
+            
         )
 
     def forward(self, x):
         return self.model(x)
-
+    
 
 if __name__ == "__main__":
 

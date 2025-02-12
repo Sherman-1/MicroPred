@@ -2,14 +2,10 @@
 # -*- coding: utf-8 -*-
 
 
-print("================ Loading Libraries =================")
-
 import time
 from tqdm import tqdm 
-
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
-
 import polars as pl 
 
 class ConvNet( torch.nn.Module ):
@@ -243,8 +239,7 @@ def main():
         residue_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["residue_embs"].items()})
         prot_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["protein_embs"].items()})
 
-        
-
+    
     print(f"Number of residue embeddings : {len(residue_emb)}")
     torch.save(obj=residue_emb, f="../training_dataset/trainset_residue_embeddings.pt")
     torch.save(obj=prot_emb, f="../training_dataset/trainset_protein_embeddings.pt")
@@ -271,4 +266,4 @@ def main():
 
 if __name__ == "__main__":
 
-    main()
+    print("Test")

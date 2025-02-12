@@ -64,5 +64,7 @@ df_train, df_test = train_test_split(df, test_size = 0.4, stratify=df[["category
 df_train.write_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train_sequences.csv")
 df_test.write_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/test_sequences")
 
+if __name__ == "__main__": 
 
+    pass
 

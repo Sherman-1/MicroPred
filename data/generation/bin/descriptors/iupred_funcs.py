@@ -6,30 +6,6 @@ import os
 from pathlib import Path
 
 
-def search_main_directory():
-
-    """
-    Iteratively searches for the peptide directory and returns its absolute path.
-    """
-
-    global main_directory
-    main_directory = None
-    for i in range(6): 
-        backward = "../" * i
-        main_directory = Path(f"{backward}Peptides").resolve()
-        if main_directory.exists():
-            break
-
-    if main_directory is None:
-        raise FileNotFoundError("Peptide directory not found")
-    
-    print(f"Working on the main directory : {main_directory}")
-    
-    return main_directory
-
-search_main_directory()
-
-PATH= main_directory / "bin/descriptors/support_data"
 
 def avg(lst):
     return sum(lst) / len(lst)
@@ -92,28 +68,33 @@ def read_seq(fasta_file):
             _seq += _line.strip()
     return _seq
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+SUPPORT_DATA_DIR = BASE_DIR / 'support_data'
+
 
 def iupred(seq, mode):
     if mode == "short":
         lc = 1
         uc = 25
         wc = 10
-        mtx = read_matrix(f"{PATH}/iupred2_short_energy_matrix")
-        histo, histo_min, histo_max, histo_step = read_histo(f"{PATH}/short_histogram")
+        mtx = read_matrix(f"{SUPPORT_DATA_DIR}/iupred2_short_energy_matrix")
+        histo, histo_min, histo_max, histo_step = read_histo(f"{SUPPORT_DATA_DIR}/short_histogram")
 
     elif mode == 'glob':
         lc = 1
         uc = 100
         wc = 15
-        mtx = read_matrix("f{PATH}/iupred2_long_energy_matrix")
-        histo, histo_min, histo_max, histo_step = read_histo(f"{PATH}/long_histogram")
+        mtx = read_matrix(f"{SUPPORT_DATA_DIR}/iupred2_long_energy_matrix")
+        histo, histo_min, histo_max, histo_step = read_histo(f"{SUPPORT_DATA_DIR}/long_histogram")
 
     else:
         lc = 1
         uc = 100
         wc = 10
-        mtx = read_matrix(f"{PATH}/iupred2_long_energy_matrix")
-        histo, histo_min, histo_max, histo_step = read_histo(f"{PATH}/long_histogram")
+        mtx = read_matrix(f"{SUPPORT_DATA_DIR}/iupred2_long_energy_matrix")
+        histo, histo_min, histo_max, histo_step = read_histo(f"{SUPPORT_DATA_DIR}/long_histogram")
 
     unweighted_energy_score = [0] * len(seq)
     weighted_energy_score = [0] * len(seq)
@@ -210,9 +191,9 @@ def anchor2(seq, iupred_scores):
     par_b = 0.26
     par_c = 0.43
     iupred_limit = par_c - (par_a / par_b)
-    mtx = read_matrix(f"{PATH}/anchor2_energy_matrix")
+    mtx = read_matrix(f"{SUPPORT_DATA_DIR}/anchor2_energy_matrix")
     interface_comp = {}
-    with open(f"{PATH}/anchor2_interface_comp", "r") as _fn:
+    with open(f"{SUPPORT_DATA_DIR}/anchor2_interface_comp", "r") as _fn:
         for line in _fn:
             interface_comp[line.split()[1]] = float(line.split()[2])
     local_energy_score = [0] * len(seq)
@@ -247,7 +228,7 @@ def anchor2(seq, iupred_scores):
 
 
 
+if __name__ == "__main__":
 
-
-
+    pass
 

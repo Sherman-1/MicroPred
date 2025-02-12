@@ -19,8 +19,8 @@ import numpy as np
 
 from pathlib import Path
 
-import tool_functions
-import iupred_funcs
+from . import tool_functions
+from . import iupred_funcs
 
 
 from pyHCA.core.annotateHCA import _annotation_aminoacids
@@ -33,6 +33,10 @@ import polars as pl
 
 from tqdm import tqdm
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+SUPPORT_DATA_DIR = BASE_DIR / 'support_data'
 
 # ------------------------ #
 #   AA index descriptors   #
@@ -41,13 +45,6 @@ from tqdm import tqdm
 AA = { "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V" }
 
 
-main_directory = None
-for i in range(10): 
-    backward = "../" * i
-    main_directory = Path(f"{backward}Peptides").resolve()
-    if main_directory.exists():
-        print(main_directory)
-        break
 
 
 
@@ -59,7 +56,7 @@ def setup_aa_indexes():
     aa_indexes = {}
 
     # Read the aa_indexes_names from the first file
-    with open(main_directory / "bin" / "descriptors" / "support_data" / "selected_aaindex1_reformated_58_Van_Westen.dms", "r") as f:
+    with open(f"{SUPPORT_DATA_DIR}/selected_aaindex1_reformated_58_Van_Westen.dms", "r") as f:
         for line in f:
             if line.startswith("#"):
                 aa = line.split()[1:]
@@ -67,15 +64,13 @@ def setup_aa_indexes():
             aa_indexes_names.append(line.split()[0].strip())
 
     # Read the aa_indexes from the second file
-    with open(main_directory / "bin" / "descriptors" / "support_data" / "AA_index_scaled.txt", "r") as f:
+    with open(f"{SUPPORT_DATA_DIR}/AA_index_scaled.txt", "r") as f:
         for line in f:
             aa = line.split()[0].strip()
             for i, aaj in enumerate(line.split()[1:]):
                 if aa_indexes_names[i] not in aa_indexes:
                     aa_indexes[aa_indexes_names[i]] = {}
                 aa_indexes[aa_indexes_names[i]][aa] = float(aaj)
-    
-
 
 
 def calculate_PDT(seq , aa_indexes , lamda):
@@ -212,7 +207,7 @@ def read_fasta( fasta_path ):
                 
     return [ SeqRecord(Seq(seq), id=uniprot_id) for uniprot_id, seq in sequences.items() ]
 
-def process_data(records, category): 
+def process_data(records : list, category): 
 
     setup_aa_indexes()
     #results = pool_process(records, num_processes=8)
