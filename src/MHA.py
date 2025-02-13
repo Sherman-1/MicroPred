@@ -8,14 +8,13 @@
 #
 # creation_date: Fri Nov 29 16:53:41 2024
 
-import os
 import sys
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
+
+import numpy as np
+
 
 CLASSES = [
     
@@ -41,13 +40,6 @@ CLASSES = [
 
 CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES)))) 
 INT_TO_CLASS = dict(zip(range(len(CLASSES)), CLASSES))
-
-
-import os
-
-import numpy as np
-import torch
-import torch.nn as nn
 
 
 
@@ -300,9 +292,6 @@ class MHAPooling(nn.Module):
         Qi = embeddings.mean(axis=-2, keepdim=True) # Suppress mean pool for self attention
         attn_output, attn_output_weights = self.attention(q=Qi, k=embeddings, v=embeddings, key_padding_mask = masks)
         return torch.atleast_2d(torch.squeeze(attn_output)), attn_output_weights
-
-import torch
-import torch.nn as nn
 
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim=512, dropout=0.3):

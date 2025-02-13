@@ -7,14 +7,6 @@ Github: https://github.com/Sherman-1
 ======================================================
 """
 
-import warnings
-import logging
-
-# Fuck em logs
-warnings.filterwarnings("ignore")
-logging.disable(logging.WARNING)
-
-
 import os
 import sys
 from pathlib import Path
@@ -175,19 +167,7 @@ def padding_collate(batch):
     batch_embeddings = torch.stack(padded_embeddings)
     batch_labels = torch.tensor(labels)
     batch_attention_mask = torch.stack(attention_masks)
-
     batch_attention_mask = ~batch_attention_mask 
-    # Because of custom MultiHeadAttention implementation ! 
-    # See these lines : 
-    # if mask is not None:
-    #        mask = mask.repeat(n_head, 1, 1) // (n*b) x .. x ..
-    #    if key_padding_mask is not None:  //(sz_b, len_k)
-    #        key_padding_mask = torch.stack([key_padding_mask,]*n_head, dim=0).reshape(sz_b*n_head, 1, len_k) * torch.ones(sz_b*n_head, len_q, 1, dtype=torch.bool, device = q.device)
-    #        if mask is not None:
-    #            mask = mask + key_padding_mask
-    #        else:
-    #            mask = key_padding_mask
-    
     
     return {
         "embeddings": batch_embeddings,
@@ -202,6 +182,7 @@ def get_input_data():
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
         .select(["residue_emb", "category"])
+        .head(100)
         .collect()
         .rename({"residue_emb": "embeddings", "category": "labels"})
         .to_pandas()
@@ -220,6 +201,7 @@ def get_input_data():
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
         .select(["residue_emb", "category"])
+        .head(100)
         .collect()
         .rename({"residue_emb": "embeddings", "category": "labels"})
         .to_pandas()
@@ -250,42 +232,21 @@ def main():
                     mlp_hidden_dim = 128,
                     num_classes = 5
                     ).to(DEVICE)
-    
-    #MODEL = torch.compile(MODEL)
 
-    check_model_on_gpu(MODEL)
+    from torch.utils.data import DataLoader
 
-    training_args = TrainingArguments(
-        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/MHAP_MLP",
-        num_train_epochs=10,
-        per_device_train_batch_size=512,
-        per_device_eval_batch_size=512,
-        eval_strategy="epoch",
-        fp16=True,
-        deepspeed="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ds_config.json",
-        save_strategy="epoch",
-        logging_steps=20,
-        report_to=["wandb"],
-        run_name="MHAP_MLP",
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        greater_is_better=True,
-        save_total_limit=1,
-        remove_unused_columns=False
-    )
+    dl = DataLoader(train_ds, collate_fn = padding_collate, batch_size = 10)
 
-    trainer = Trainer(
-        model=MODEL,
-        args=training_args,
-        train_dataset=train_ds,   
-        eval_dataset=eval_ds,        
-        compute_metrics=compute_metrics,
-        data_collator=padding_collate
-    )
+    batch = next(iter(dl)) 
 
-    wandb.init(project="MHAP_MLP", name="MHAP_MLP")
+    embed = batch["embeddings"].to(DEVICE)
+    mask = batch["attention_mask"].to(DEVICE)
+    labels = batch["labels"].to(DEVICE)
 
-    trainer.train()
+    MODEL.train()
+    output = MODEL(embed, mask, labels)
+    print(output)
+
 
 
 if __name__ == "__main__":

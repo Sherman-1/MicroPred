@@ -1,7 +1,10 @@
 *.sif
 **/__pycache__/
 **/training_dataset/
-**/wandb
+**/models/
+**/results/
+**/wandb/
+
 **/*.log
 **/*.pt 
 **/*.pth
@@ -11,6 +14,7 @@
 **/*.csv 
 **/*.tsv
 **/*.[eo][0-9]*
+**/*.parquet
 
 
 runs/

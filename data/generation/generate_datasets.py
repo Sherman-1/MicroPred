@@ -1,12 +1,43 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-
-import time
-from tqdm import tqdm 
-import torch
-from transformers import T5EncoderModel, T5Tokenizer
+from Bio import SeqIO 
 import polars as pl 
+from sklearn.model_selection import train_test_split
+from bin.descriptors.sequence_descriptors import process_data as get_descriptors
+from transformers import T5EncoderModel, T5Tokenizer
+import torch
+import warnings
+from tqdm import tqdm 
+import time 
+
+# Better in a yaml file, do it later
+fastas = {
+
+    "bitopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/bitopic_representatives.fasta",
+    "polytopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/polytopic_representatives.fasta",
+    "disprot"  : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/disprot_representatives.fasta", 
+    "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/Small_full.fasta",
+    "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/S3_full_subset.fasta"
+
+}
+
+CLASSES = [
+    
+    "molten",
+    "globular",
+    "bitopic",
+    "polytopic",
+    "disprot"
+]
+
+CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES)))) 
+
+if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    DEVICE = "cuda"
+elif torch.backends.mps.is_built() and torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+    warnings.warn("Warning: Embeddings inference running on CPU!", RuntimeWarning)
+
 
 class ConvNet( torch.nn.Module ):
     def __init__( self ):
@@ -68,16 +99,62 @@ def load_sec_struct_model(device):
 
     return model
 
-def write_prediction_fasta(predictions, out_path):
-    class_mapping = {0:"H",1:"E",2:"L"}
-    with open(out_path, 'w+') as out_f:
-        out_f.write( '\n'.join(
-            [ ">{}\n{}".format(
-                seq_id, ''.join( [class_mapping[j] for j in yhat] ))
-            for seq_id, yhat in predictions.items()
-            ]
-            ) )
-    return None
+def embeddings_to_dataframe(results: dict) -> pl.DataFrame:
+    """
+    converts dict returned by get_embeddings() to a Polars DF
+    suited for parquet storage. 
+    Cols : id, protein_embs, residue_embs
+    """
+
+    protein_ids = set(results.get("protein_embs", {}).keys())
+    residue_ids = set(results.get("residue_embs", {}).keys())
+
+    # Shouldn't 
+    assert len(protein_ids) == len(residue_ids), "IDs don't match between per-residue and per-protein embeddings"
+
+    all_ids = protein_ids.union(residue_ids)
+
+    rows = []
+    for identifier in all_ids:
+
+        # { id : { prot_embs : torch.Tensor(1,1024), residue_embs : torch.Tensor(Lx1024) } }
+        protein_array = results.get("protein_embs", {}).get(identifier)
+        protein_list = protein_array.tolist() if protein_array is not None else None
+
+        # Get the residue embeddings (2D) if they exist, converting to a list of lists
+        residue_array = results.get("residue_embs", {}).get(identifier)
+        residue_list = residue_array.tolist() if residue_array is not None else None
+
+        rows.append({
+            "id": identifier,
+            "protein_emb": protein_list,
+            "residue_emb": residue_list
+        })
+
+    return pl.DataFrame(rows)
+
+def return_final_df(seq_descriptors, seq_embeddings, seq_dict):
+
+    return (
+        seq_descriptors
+        .with_columns(
+            # Turn seq descriptors into an array like structure
+            descriptors = pl.concat_list(pl.exclude(["id","category"])),
+            # Dirty way to keep the names of each descriptor
+            descriptor_names = seq_descriptors.select(pl.exclude(["id","category"])).columns
+        )
+        .select(["id","descriptors","category","descriptor_names"])
+        .join(seq_embeddings, on = "id", how = "inner")
+        .join(
+            pl.DataFrame({
+                "id" : seq_dict.keys(), "sequence" : seq_dict.values()
+            }), on = "id", how = "inner"
+        )
+        .with_columns(
+            # Flag unorthodox residues, remove trailing stops and space the characters for the tokenizer
+            sequence = pl.col("sequence").str.replace(r"U|B|O|Z","X").replace("*", "").map_elements(lambda seq : " ".join(seq), return_dtype = pl.String),
+        )
+    )
 
 def get_T5_model(device):
 
@@ -94,41 +171,6 @@ def get_T5_model(device):
 
     return model, tokenizer
 
-def read_fasta( fasta_path ):
-    '''
-        Reads in fasta file containing multiple sequences.
-        Returns dictionary of holding multiple sequences or only single 
-        sequence, depending on input file.
-    '''
-
-    AA = 'ACDEFGHIKLMNPQRSTVWY'
-    
-    sequences = dict()
-    with open( fasta_path, 'r' ) as fasta_f:
-        for line in fasta_f:
-            # get uniprot ID from header and create new entry
-            if line.startswith('>'):
-                uniprot_id = line.replace('>', '').strip()
-                # replace tokens that are mis-interpreted when loading h5
-                uniprot_id = uniprot_id.replace("/","_").replace(".","_")
-                sequences[ uniprot_id ] = ''
-            else:
-                # repl. all whie-space chars and join seqs spanning multiple lines
-                sequences[ uniprot_id ] += ''.join( line.split() ).upper().replace("-","") # drop gaps and cast to upper-case
-
-    bad_keys = list()
-
-    for key in sequences:
-
-        if not set(sequences[key]).issubset(set(AA)):
-            bad_keys.append(key)
-
-    for key in bad_keys:
-
-        del sequences[key]
-                
-    return sequences
-
 def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_protein: bool, sec_struct : bool,
                    max_residues=4000, max_seq_len=1000, max_batch=100 ):
 
@@ -137,8 +179,6 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
                "sec_structs" : dict()
                }
 
-
-    
     print("Parameters for inference : ")
     print(f"        Max residues: {max_residues}, Max sequence length: {max_seq_len}, Max batch size: {max_batch}")
     print(f"        Per-residue embeddings: {per_residue}")
@@ -208,62 +248,34 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
 
     return results
 
-def main(): 
 
-    train = pl.read_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train_sequences.csv", separator = ",")
-    test = pl.read_csv("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/test_sequences.csv", separator = ",")
+def main():
 
-    print("================ Checking CUDA  =================")
-    assert torch.cuda.is_available(), "Error : CUDA not detected"
-    assert torch.cuda.device_count() > 0, "Error : No CUDA capable device found"
-    print("================ CUDA ok ! =================")
+    dfs = []
 
-    device = torch.device("cuda")
-    model, tokenizer = get_T5_model(device)
+    for category, fasta in fastas.items(): 
 
-    per_protein = True
-    per_residue = True
-    sec_struct = False
+        records = list(SeqIO.parse(fasta, "fasta"))
 
-    residue_emb = {}
-    prot_emb = {}
-    for category, data in train.group_by("category"): 
+        seq_dict = { record.id : str(record.seq) for record in records }
 
-        seqs = [ "".join(s.split()) for s in data["sequence"].to_list() ]
-        ids = data["id"].to_list()
+        print("Computing sequence descriptors ... : ")
+        seq_descriptors = get_descriptors(records = records, category = CLASS_TO_INT[category])
 
-        seq_dict = { k : v for k,v in zip(ids, seqs) }
+        print("Computing embeddings ... ")
+        seq_embeddings = get_embeddings(device = DEVICE, seqs = seq_dict, per_protein=True, per_residue=True, sec_struct = False, max_batch=300)
+        seq_embeddings = embeddings_to_dataframe(seq_embeddings)
 
-        embeddings = get_embeddings(device, seq_dict, max_batch=1024, max_residues=5000,
-                                    per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
-        residue_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["residue_embs"].items()})
-        prot_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["protein_embs"].items()})
+        dfs.append(return_final_df(seq_descriptors, seq_embeddings, seq_dict))
 
-    
-    print(f"Number of residue embeddings : {len(residue_emb)}")
-    torch.save(obj=residue_emb, f="../training_dataset/trainset_residue_embeddings.pt")
-    torch.save(obj=prot_emb, f="../training_dataset/trainset_protein_embeddings.pt")
+    data = pl.concat(dfs)
 
-    residue_emb = {}
-    prot_emb = {}
-    for category, data in test.group_by("category"): 
+    train, val = train_test_split(data, test_size = 0.4, stratify=data[["category"]], shuffle=True)
 
-        seqs = [ "".join(s.split()) for s in data["sequence"].to_list() ]
-        ids = data["id"].to_list()
+    train.write_parquet("../training_dataset/train.parquet")
+    val.write_parquet("../training_dataset/eval.parquet")
 
-        seq_dict = { k : v for k,v in zip(ids, seqs) }
+if __name__ == "__main__": 
 
-        embeddings = get_embeddings(device, seq_dict, max_batch=1024, max_residues=5000,
-                                    per_protein=per_protein, per_residue=per_residue, sec_struct=sec_struct)
-        residue_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["residue_embs"].items()})
-        prot_emb.update({k: {"embedding": v, "class_type": category[0]} for k,v in embeddings["protein_embs"].items()})
+    main()
 
-    print(f"Number of residue embeddings : {len(residue_emb)}")
-    torch.save(obj=residue_emb, f="../training_dataset/testset_residue_embeddings.pt")
-    torch.save(obj=prot_emb, f="../training_dataset/testset_protein_embeddings.pt")
-
-
-
-if __name__ == "__main__":
-
-    print("Test")
