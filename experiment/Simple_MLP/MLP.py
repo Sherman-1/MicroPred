@@ -41,7 +41,6 @@ os.environ["TRITON_CACHE_DIR"] = "/scratchlocal/triton_cache"
 from MHA import MLP
 from utils import print_gpu_memory, check_model_on_gpu, set_seed
 
-# ===================================
 
 #####################################
 # GLOBALS / CONFIG
@@ -93,6 +92,9 @@ def compute_metrics(eval_pred):
     """
     """
     logits, labels = eval_pred
+    print("compute_metrics called!")
+    # ... rest of your code
+
 
     if not isinstance(logits, np.ndarray):
         logits = logits.numpy() if hasattr(logits, "numpy") else np.array(logits)
@@ -119,6 +121,7 @@ def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
+        .head(1000)
         .select(["protein_emb", "category"])
         .collect()
         .rename({"protein_emb": "embeddings", "category": "labels"})
@@ -136,6 +139,7 @@ def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
+        .head(1000)
         .select(["protein_emb", "category"])
         .collect()
         .rename({"protein_emb": "embeddings", "category": "labels"})
@@ -174,7 +178,7 @@ def main():
         report_to=["wandb"],
         run_name="MLP",
         load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
+        metric_for_best_model="eval_accuracy",
         greater_is_better=True,
         save_total_limit=1
     )

@@ -11,7 +11,7 @@ Github: https://github.com/Sherman-1
 import warnings
 import logging
 
-# Fuck em logs
+# F em huggingface logs
 warnings.filterwarnings("ignore")
 logging.disable(logging.WARNING)
 
@@ -36,6 +36,8 @@ from transformers import (
     Trainer,
     DataCollatorWithPadding
 )
+
+import evaluate
 
 from peft import get_peft_model, LoraConfig, TaskType
 from datasets import Dataset
@@ -93,7 +95,7 @@ class ProtT5Classifier(nn.Module):
         self.classifier = MLP(input_dim=1024, hidden_dim=512, output_dim=num_classes)
 
         if loss_weights is not None:
-            self.loss_fn = nn.CrossEntropyLoss(
+            self.loss_fn = nn.BCEWithLogitsLoss(
                 weight=torch.as_tensor(loss_weights, device=base_model.device, dtype=torch.float32)
             )
         else:
@@ -115,29 +117,34 @@ class ProtT5Classifier(nn.Module):
 # EVALUATION METRICS
 #####################################
 
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+accuracy_metric = evaluate.load("accuracy")
+f1_metric = evaluate.load("f1")
+precision_metric = evaluate.load("precision")
+recall_metric = evaluate.load("recall")
 
 def compute_metrics(eval_pred):
 
-    """
-    """
     logits, labels = eval_pred
 
-    if not isinstance(logits, np.ndarray):
-        logits = logits.numpy() if hasattr(logits, "numpy") else np.array(logits)
-    if not isinstance(labels, np.ndarray):
-        labels = labels.numpy() if hasattr(labels, "numpy") else np.array(labels)
+    # Convert logits and one-hot labels to numpy arrays (if they aren't already).
+    if hasattr(logits, "cpu"):
+        logits = logits.cpu().numpy()
+    if hasattr(labels, "cpu"):
+        labels = labels.cpu().numpy()
 
     preds = np.argmax(logits, axis=-1)
+    true_labels = np.argmax(labels, axis=-1)
 
-    acc = accuracy_score(labels, preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="macro")
+    accuracy = accuracy_metric.compute(predictions=preds, references=true_labels)["accuracy"]
+    f1 = f1_metric.compute(predictions=preds, references=true_labels, average="macro")["f1"]
+    precision = precision_metric.compute(predictions=preds, references=true_labels, average="macro")["precision"]
+    recall = recall_metric.compute(predictions=preds, references=true_labels, average="macro")["recall"]
 
     return {
-        "accuracy": acc,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
+        "eval_accuracy": accuracy,
+        "eval_f1": f1,
+        "eval_precision": precision,
+        "eval_recall": recall,
     }
 
 #####################################
@@ -152,14 +159,15 @@ def tokenize(examples):
         truncation=True,
         max_length=1024
     )
-    tokens["labels"] = examples["category"]
+    tokens["labels"] = examples["labels"]
     return tokens
 
 def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .select(["sequence", "category"])
+        .select(["sequence", "category", "one_hot"])
+        .rename({"one_hot": "labels"})
         .collect()
         .to_pandas()
     )
@@ -177,7 +185,8 @@ def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .select(["sequence", "category"])
+        .select(["sequence", "category","one_hot"])
+        .rename({"one_hot": "labels"})
         .collect()
         .to_pandas()
     )
@@ -213,23 +222,28 @@ def main():
     check_model_on_gpu(MODEL)
 
     training_args = TrainingArguments(
+
         output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_MLP",
-        num_train_epochs=3,
-        per_device_train_batch_size=8,
+        num_train_epochs=5,
+        
+        per_device_train_batch_size=16,
         per_device_eval_batch_size=126,
-        eval_strategy="epoch",
+        evaluation_strategy="steps",
+        remove_unused_columns=False,  
+        
         fp16=True,
         deepspeed="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ds_config.json",
-        save_strategy="epoch",
+        
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",   
+        greater_is_better=True,
+        save_strategy="steps",
+        save_total_limit=1,
         logging_steps=100,
         report_to=["wandb"],
-        run_name="FT_DeepSpeed",
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        greater_is_better=True,
-        save_total_limit=1,
-        remove_unused_columns=False
+        run_name="FT_DeepSpeed"
     )
+
 
     trainer = Trainer(
         model=MODEL,

@@ -7,6 +7,7 @@ import torch
 import warnings
 from tqdm import tqdm 
 import time 
+import numpy as np
 
 # Better in a yaml file, do it later
 fastas = {
@@ -133,17 +134,26 @@ def embeddings_to_dataframe(results: dict) -> pl.DataFrame:
 
     return pl.DataFrame(rows)
 
-def return_final_df(seq_descriptors, seq_embeddings, seq_dict):
+def return_final_df(seq_descriptors, seq_embeddings, seq_dict, unique_classes):
 
-    return (
+
+    num_classes = len(unique_classes)
+
+    df = (
         seq_descriptors
         .with_columns(
-            # Turn seq descriptors into an array like structure
-            descriptors = pl.concat_list(pl.exclude(["id","category"])),
-            # Dirty way to keep the names of each descriptor
-            descriptor_names = seq_descriptors.select(pl.exclude(["id","category"])).columns
+            HCA_score = ( (pl.col("HCA_score") + 10) / 20 ) # x - min / max - min, HCA [-10,10]. Scale to [0,1], every other phychem is already [0,1] 
         )
-        .select(["id","descriptors","category","descriptor_names"])
+        .with_columns(
+
+            # Turn seq descriptors into an array like structure for later ( easier dataloading )
+            descriptors = pl.concat_list(pl.exclude(["id","category","seq_len"])),
+            # Dirty way to keep the names of each descriptors in order ... 
+            descriptor_names = seq_descriptors.select(pl.exclude(["id","category","seq_len"])).columns,
+            one_hot = pl.col("category").map_elements(lambda x: np.eye(num_classes, dtype=float)[x].tolist(), return_dtype = pl.List(pl.Float32))
+            
+        )
+        .select(["id","seq_len","descriptors","category","one_hot","descriptor_names"])
         .join(seq_embeddings, on = "id", how = "inner")
         .join(
             pl.DataFrame({
@@ -151,24 +161,50 @@ def return_final_df(seq_descriptors, seq_embeddings, seq_dict):
             }), on = "id", how = "inner"
         )
         .with_columns(
+
             # Flag unorthodox residues, remove trailing stops and space the characters for the tokenizer
-            sequence = pl.col("sequence").str.replace(r"U|B|O|Z","X").replace("*", "").map_elements(lambda seq : " ".join(seq), return_dtype = pl.String),
+            sequence = (
+                pl.col("sequence")
+                .str.replace_all(r"[UBOZ\.]", "X")
+                .str.replace_all(r"\*$", "")
+                .str.split("")   # Convert each sequence to list of characters
+                .list.join(" ")  # Join characters of lists with whitespaces for pT5 tokenizer expected format !
+            )
         )
     )
+
+    invalids = df.filter(
+        (pl.col("descriptors").map_elements(lambda arr: any(x < 0 or x > 1 for x in arr), return_dtype=pl.Boolean))
+    )
+
+    assert invalids.height == 0, (
+        "Some physico chemical descriptors are not scaled properly. Expected [0,1] range.\n"
+        f"Details:\n{invalids['descriptors'].to_list()}"
+    )
+
+    final = df.filter(
+        ~pl.col("sequence").str.contains_any(["*"])
+    )
+
+    if final.height != df.height:
+
+        warnings.warn("Some sequences had stops inframe, they have been removed from the dataset !")
+
+    return final
+
 
 def get_T5_model(device):
 
     model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc")
     tokenizer = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
 
+    if device==torch.device("cpu"):
+        print("Model running on CPU. Casting full precision ...")
+        model.to(torch.float64)
     
     model = model.to(device) 
     model = model.eval()
     
-    if device==torch.device("cpu"):
-        print("Casting model to full precision for running on CPU ...")
-        model.to(torch.float32)
-
     return model, tokenizer
 
 def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_protein: bool, sec_struct : bool,
@@ -248,10 +284,11 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
 
     return results
 
-
 def main():
 
     dfs = []
+
+    unique_classes = [ CLASS_TO_INT[CLASS] for CLASS in CLASSES ]
 
     for category, fasta in fastas.items(): 
 
@@ -266,13 +303,18 @@ def main():
         seq_embeddings = get_embeddings(device = DEVICE, seqs = seq_dict, per_protein=True, per_residue=True, sec_struct = False, max_batch=300)
         seq_embeddings = embeddings_to_dataframe(seq_embeddings)
 
-        dfs.append(return_final_df(seq_descriptors, seq_embeddings, seq_dict))
+        dfs.append(return_final_df(seq_descriptors, seq_embeddings, seq_dict, unique_classes))
 
     data = pl.concat(dfs)
 
     train, val = train_test_split(data, test_size = 0.4, stratify=data[["category"]], shuffle=True)
 
+    print(train.select(["category","one_hot"]))
+
+    print(f"Writting {train.height} sequences to train dataset")
     train.write_parquet("../training_dataset/train.parquet")
+
+    print(f"Writting {val.height} sequences to validation dataset")
     val.write_parquet("../training_dataset/eval.parquet")
 
 if __name__ == "__main__": 
