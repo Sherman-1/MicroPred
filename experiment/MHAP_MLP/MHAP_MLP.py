@@ -26,13 +26,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from sklearn.utils import compute_class_weight
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 from transformers import (
 
     TrainingArguments,
     Trainer
 )
+
+import evaluate
 
 from datasets import Dataset
 import wandb
@@ -88,11 +89,11 @@ class MHAP_MLP(nn.Module):
         self.mlp = MLP(input_dim=output_embed_dim, output_dim=num_classes, hidden_dim = mlp_hidden_dim)
 
         if loss_weights is not None:
-            self.loss_fn = nn.CrossEntropyLoss(
+            self.loss_fn = nn.BCEWithLogitsLoss(
                 weight=torch.as_tensor(loss_weights, device=DEVICE, dtype=torch.float32)
             )
         else:
-            self.loss_fn = nn.CrossEntropyLoss()
+            self.loss_fn = nn.BCEWithLogitsLoss()
 
     def forward(self, embeddings, attention_mask, labels):
         attn_output, _ = self.mhap(embeddings, attention_mask)  
@@ -103,32 +104,40 @@ class MHAP_MLP(nn.Module):
 
         return {"loss": loss, "logits": logits} if loss is not None else logits
 
+
 #####################################
 # EVALUATION METRICS
 #####################################
+accuracy_metric = evaluate.load("accuracy")
+f1_metric = evaluate.load("f1")
+precision_metric = evaluate.load("precision")
+recall_metric = evaluate.load("recall")
 
 def compute_metrics(eval_pred):
 
-    """
-    """
     logits, labels = eval_pred
 
-    if not isinstance(logits, np.ndarray):
-        logits = logits.numpy() if hasattr(logits, "numpy") else np.array(logits)
-    if not isinstance(labels, np.ndarray):
-        labels = labels.numpy() if hasattr(labels, "numpy") else np.array(labels)
+    # Convert logits and one-hot labels to numpy arrays (if they aren't already).
+    if hasattr(logits, "cpu"):
+        logits = logits.cpu().numpy()
+    if hasattr(labels, "cpu"):
+        labels = labels.cpu().numpy()
 
     preds = np.argmax(logits, axis=-1)
+    true_labels = np.argmax(labels, axis=-1)
 
-    acc = accuracy_score(labels, preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="macro")
+    accuracy = accuracy_metric.compute(predictions=preds, references=true_labels)["accuracy"]
+    f1 = f1_metric.compute(predictions=preds, references=true_labels, average="macro")["f1"]
+    precision = precision_metric.compute(predictions=preds, references=true_labels, average="macro")["precision"]
+    recall = recall_metric.compute(predictions=preds, references=true_labels, average="macro")["recall"]
 
     return {
-        "accuracy": acc,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
+        "eval_accuracy": accuracy,
+        "eval_f1": f1,
+        "eval_precision": precision,
+        "eval_recall": recall,
     }
+
 
 #####################################
 # DATA LOADING 
@@ -150,35 +159,34 @@ def padding_collate(batch):
     >>> print(sum_vector)
     0.0
     """
+
     embeddings = [item["embeddings"] for item in batch]
-    labels = [item["labels"] for item in batch]
-    
+    labels = [torch.as_tensor(item["labels"]) for item in batch]  
     max_len = max(emb.shape[0] for emb in embeddings)
-    
+
     padded_embeddings = []
     attention_masks = []
-    
+
     for emb in embeddings:
         seq_len, emb_dim = emb.shape
         pad_len = max_len - seq_len
         if pad_len > 0:
-            padded_emb = F.pad(emb, (0, 0, 0, pad_len))
+            padded_emb = F.pad(emb, (0, 0, 0, pad_len))  # Pad only along sequence length
             mask = torch.cat([torch.ones(seq_len, dtype=torch.bool), 
                               torch.zeros(pad_len, dtype=torch.bool)])
         else:
             padded_emb = emb
             mask = torch.ones(seq_len, dtype=torch.bool)
-            
+
         padded_embeddings.append(padded_emb)
         attention_masks.append(mask)
-    
-    batch_embeddings = torch.stack(padded_embeddings)
-    batch_labels = torch.tensor(labels)
-    batch_attention_mask = torch.stack(attention_masks)
 
-    batch_attention_mask = ~batch_attention_mask 
+    batch_embeddings = torch.stack(padded_embeddings)
+    batch_labels = torch.stack(labels)  
+    batch_attention_mask = torch.stack(attention_masks)
+    batch_attention_mask = ~batch_attention_mask  
     # Because of custom MultiHeadAttention implementation ! 
-    # See these lines : 
+    # See these lines in the MHA definition :
     # if mask is not None:
     #        mask = mask.repeat(n_head, 1, 1) // (n*b) x .. x ..
     #    if key_padding_mask is not None:  //(sz_b, len_k)
@@ -188,44 +196,38 @@ def padding_collate(batch):
     #        else:
     #            mask = key_padding_mask
     
-    
     return {
         "embeddings": batch_embeddings,
         "labels": batch_labels,
         "attention_mask": batch_attention_mask
     }
 
-
 def get_input_data():
 
     print("Collecting training data")
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .select(["residue_emb", "category"])
-        .collect()
-        .rename({"residue_emb": "embeddings", "category": "labels"})
-        .to_pandas()
+        .select(["residue_emb", "category", "one_hot"])
+        .rename({"residue_emb": "embeddings", "one_hot": "labels"})
     )
 
     loss_weights = compute_class_weight(
         class_weight="balanced", 
-        classes=np.unique(df["labels"].values), 
-        y=df["labels"].values
+        classes=np.unique(df.select("category").collect().to_series().to_list()), 
+        y=df.select("category").collect().to_series().to_list()
     )
     print(f"    Building dataset ... ")
-    training_dataset = Dataset.from_pandas(df, preserve_index=False)
+    training_dataset = Dataset.from_pandas(df.select(pl.exclude("category")).collect().to_pandas(), preserve_index=False)
     training_dataset.set_format("torch", columns=["embeddings","labels"])
 
     print(f"Collecting eval data")
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .select(["residue_emb", "category"])
-        .collect()
-        .rename({"residue_emb": "embeddings", "category": "labels"})
-        .to_pandas()
+        .select(["residue_emb", "category", "one_hot"])
+        .rename({"residue_emb": "embeddings", "one_hot": "labels"})
     )
     print(f"    Building dataset ... ")
-    eval_dataset = Dataset.from_pandas(df, preserve_index=False)
+    eval_dataset = Dataset.from_pandas(df.select(pl.exclude("category")).collect().to_pandas(), preserve_index=False)
     eval_dataset.set_format("torch", columns=["embeddings","labels"])
 
     return training_dataset, eval_dataset, loss_weights
@@ -250,40 +252,43 @@ def main():
                     mlp_hidden_dim = 128,
                     num_classes = 5
                     ).to(DEVICE)
-    
-    #MODEL = torch.compile(MODEL)
 
     check_model_on_gpu(MODEL)
 
+    
     training_args = TrainingArguments(
+
         output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/MHAP_MLP",
-        num_train_epochs=10,
+        num_train_epochs=30,
+        
         per_device_train_batch_size=512,
-        per_device_eval_batch_size=512,
+        per_device_eval_batch_size=1024,
         eval_strategy="epoch",
-        fp16=True,
+        remove_unused_columns=True,  
+        
+        fp16=False,
         deepspeed="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ds_config.json",
-        save_strategy="epoch",
-        logging_steps=20,
-        report_to=["wandb"],
-        run_name="MHAP_MLP",
+        
         load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
+        metric_for_best_model="f1",   
         greater_is_better=True,
+        save_strategy="epoch",
         save_total_limit=1,
-        remove_unused_columns=False
+        logging_steps=100,
+        report_to=["wandb"],
+        run_name="F1_DeepSpeed"
+        
     )
 
     trainer = Trainer(
         model=MODEL,
         args=training_args,
         train_dataset=train_ds,   
-        eval_dataset=eval_ds,        
+        eval_dataset=eval_ds,      
         compute_metrics=compute_metrics,
-        data_collator=padding_collate
+        data_collator = padding_collate
     )
-
-    wandb.init(project="MHAP_MLP", name="MHAP_MLP")
+    wandb.init(project="MHAP_MLP", name="F1_DeepSpeed")
 
     trainer.train()
 

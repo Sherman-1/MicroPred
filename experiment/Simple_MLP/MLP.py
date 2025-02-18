@@ -19,7 +19,6 @@ import torch
 import torch.nn as nn
 
 from sklearn.utils import compute_class_weight
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 from transformers import (
 
@@ -29,6 +28,8 @@ from transformers import (
 
 from datasets import Dataset
 import wandb
+
+import evaluate
 
 # ========== Local imports ==========
 current_dir = Path(__file__).resolve().parent
@@ -59,19 +60,17 @@ set_seed(66)
 
 class ProtT5Classifier(nn.Module):
     """
-    pT5 encoder + One Hidden Layer Perceptron
-    Simple mean pool on residue embeddings
     """
     def __init__(self, num_classes, loss_weights=None):
         super().__init__()
         self.classifier = MLP(input_dim=1024, hidden_dim=512, output_dim=num_classes)
 
         if loss_weights is not None:
-            self.loss_fn = nn.CrossEntropyLoss(
+            self.loss_fn = nn.BCEWithLogitsLoss(
                 weight=torch.as_tensor(loss_weights, device=DEVICE, dtype=torch.float32)
             )
         else:
-            self.loss_fn = nn.CrossEntropyLoss()
+            self.loss_fn = nn.BCEWithLogitsLoss()
 
     def forward(self, embeddings, labels=None):
         logits = self.classifier(embeddings)
@@ -87,31 +86,35 @@ class ProtT5Classifier(nn.Module):
 # EVALUATION METRICS
 #####################################
 
+accuracy_metric = evaluate.load("accuracy", zero_division=0)
+f1_metric = evaluate.load("f1", zero_division=0)
+precision_metric = evaluate.load("precision", zero_division=0)
+recall_metric = evaluate.load("recall", zero_division=0)
+
 def compute_metrics(eval_pred):
 
-    """
-    """
     logits, labels = eval_pred
-    print("compute_metrics called!")
-    # ... rest of your code
 
-
-    if not isinstance(logits, np.ndarray):
-        logits = logits.numpy() if hasattr(logits, "numpy") else np.array(logits)
-    if not isinstance(labels, np.ndarray):
-        labels = labels.numpy() if hasattr(labels, "numpy") else np.array(labels)
+    if hasattr(logits, "cpu"):
+        logits = logits.cpu().numpy()
+    if hasattr(labels, "cpu"):
+        labels = labels.cpu().numpy()
 
     preds = np.argmax(logits, axis=-1)
+    true_labels = np.argmax(labels, axis=-1) # Turn one-hot to class index
 
-    acc = accuracy_score(labels, preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="macro")
+    accuracy = accuracy_metric.compute(predictions=preds, references=true_labels)["accuracy"]
+    f1 = f1_metric.compute(predictions=preds, references=true_labels, average="macro")["f1"]
+    precision = precision_metric.compute(predictions=preds, references=true_labels, average="macro")["precision"]
+    recall = recall_metric.compute(predictions=preds, references=true_labels, average="macro")["recall"]
 
     return {
-        "accuracy": acc,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
+        "eval_accuracy": accuracy,
+        "eval_f1": f1,
+        "eval_precision": precision,
+        "eval_recall": recall,
     }
+
 
 #####################################
 # DATA LOADING 
@@ -119,34 +122,30 @@ def compute_metrics(eval_pred):
 
 def get_input_data():
 
+    print("Collecting training data")
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .head(1000)
-        .select(["protein_emb", "category"])
-        .collect()
-        .rename({"protein_emb": "embeddings", "category": "labels"})
-        .to_pandas()
+        .select(["protein_emb", "category", "one_hot"])
+        .rename({"protein_emb": "embeddings", "one_hot": "labels"})
     )
 
     loss_weights = compute_class_weight(
         class_weight="balanced", 
-        classes=np.unique(df["labels"].values), 
-        y=df["labels"].values
+        classes=np.unique(df.select("category").collect().to_series().to_list()), 
+        y=df.select("category").collect().to_series().to_list()
     )
-
-    training_dataset = Dataset.from_pandas(df, preserve_index=False)
+    print(f"    Building dataset ... ")
+    training_dataset = Dataset.from_pandas(df.select(pl.exclude("category")).collect().to_pandas(), preserve_index=False)
     training_dataset.set_format("torch", columns=["embeddings","labels"])
 
+    print(f"Collecting eval data")
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .head(1000)
-        .select(["protein_emb", "category"])
-        .collect()
-        .rename({"protein_emb": "embeddings", "category": "labels"})
-        .to_pandas()
+        .select(["protein_emb", "category", "one_hot"])
+        .rename({"protein_emb": "embeddings", "one_hot": "labels"})
     )
-
-    eval_dataset = Dataset.from_pandas(df, preserve_index=False)
+    print(f"    Building dataset ... ")
+    eval_dataset = Dataset.from_pandas(df.select(pl.exclude("category")).collect().to_pandas(), preserve_index=False)
     eval_dataset.set_format("torch", columns=["embeddings","labels"])
 
     return training_dataset, eval_dataset, loss_weights
@@ -167,31 +166,41 @@ def main():
     check_model_on_gpu(MODEL)
 
     training_args = TrainingArguments(
+
         output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/MLP",
         num_train_epochs=100,
-        per_device_train_batch_size=126,
-        per_device_eval_batch_size=126,
+        
+        per_device_train_batch_size=512,
+        per_device_eval_batch_size=1024,
         eval_strategy="epoch",
+        remove_unused_columns=True,  
+        
         fp16=False,
+        deepspeed="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ds_config.json",
+        
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",   
+        greater_is_better=True,
         save_strategy="epoch",
+        save_total_limit=1,
         logging_steps=100,
         report_to=["wandb"],
-        run_name="MLP",
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_accuracy",
-        greater_is_better=True,
-        save_total_limit=1
+        run_name="F1_DeepSpeed",
+
+        logging_strategy="no"
+        
     )
+
 
     trainer = Trainer(
         model=MODEL,
         args=training_args,
         train_dataset=train_ds,   
-        eval_dataset=eval_ds,        
+        eval_dataset=eval_ds,      
         compute_metrics=compute_metrics  
     )
 
-    wandb.init(project="MLP", name="Simple MLP")
+    wandb.init(project="MLP", name="MLP_F1_DeepSpeed")
 
     trainer.train()
 

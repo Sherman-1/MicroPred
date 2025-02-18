@@ -20,9 +20,18 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.utils import compute_class_weight
 from datasets import Dataset
-from transformers import TrainingArguments, Trainer
-import evaluate
 
+from transformers import (
+    T5Tokenizer,
+    T5EncoderModel,
+    TrainingArguments,
+    Trainer,
+    DataCollatorWithPadding
+)
+
+from peft import get_peft_model, LoraConfig, TaskType
+
+import evaluate
 import wandb
 
 # ========== Local imports ==========
@@ -34,7 +43,7 @@ src_path = root_dir / 'src'
 sys.path.append(str(src_path))
 os.environ["TRITON_CACHE_DIR"] = "/scratchlocal/triton_cache"
 
-from MHA import MLP
+from MHA import MLP, MHAPooling
 from utils import print_gpu_memory, check_model_on_gpu, set_seed
 
 #####################################
@@ -47,41 +56,48 @@ if not torch.cuda.is_available():
 
 set_seed(66)
 
+LORA_CONFIG = LoraConfig(
+    r=4,
+    lora_alpha=32,
+    lora_dropout=0.1,
+    target_modules=["q", "v"],
+    bias="none",
+    task_type=TaskType.FEATURE_EXTRACTION
+)
+
+
 #####################################
 # MODEL DEFINITION
 #####################################
 
-class CLASSIF_REG(nn.Module):
-    def __init__(self, input_embed_dim: int, hidden_dim: int, num_classes: int, descriptors_dim: int, class_weights, device):
-        super(CLASSIF_REG, self).__init__()
+class FT_MHAP_MLP(nn.Module):
+    """
+    ProtT5 encoder + MultiHeadAttention pooling of embeddings instead of mean pooling + MLP classifier/regressor
+    """
+    def __init__(self, base_model, input_embed_dim: int, output_embed_dim: int, hidden_dim: int, num_classes: int, class_weights, device):
+        super(FT_MHAP_MLP, self).__init__()
         self.device = device
-        self.classifier = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
-        self.regressor = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=descriptors_dim).to(device)
+        self.encoder = base_model.to(device) 
+        self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim).to(device)
+        self.classifier = MLP(input_dim=output_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
         self.classif_loss_fn = nn.BCEWithLogitsLoss(
             weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
         )
-        self.reg_loss_fn = nn.MSELoss()
 
-    def forward(self, embeddings, labels, phychem_descriptors):
+    def forward(self, input_ids, attention_mask, labels):
 
-        if embeddings is not None and embeddings.device != self.device:
-            embeddings = embeddings.to(self.device)
-        if phychem_descriptors is not None and phychem_descriptors.device != self.device:
-            phychem_descriptors = phychem_descriptors.to(self.device)
-        if labels is not None and labels.device != self.device:
-            labels = labels.to(self.device)
+        residue_embeddings = self.encoder(input_ids, attention_mask).last_hidden_state # (batch_size, seq_len, embed_dim)
+        custom_mhap_masks = ~attention_mask.bool()  # (batch_size, seq_len)
+        pooled_embeddings, _ = self.mhap(residue_embeddings, custom_mhap_masks) # (batch_size, embed_dim)
+        class_output = self.classifier(pooled_embeddings) # (batch_size, num_classes)
 
-        class_output = self.classifier(embeddings)  
-        reg_output = self.regressor(embeddings)
 
-        if labels is not None and phychem_descriptors is not None:
+        if labels is not None:
 
-            loss_class = self.classif_loss_fn(class_output, labels)
-            loss_reg = self.reg_loss_fn(reg_output, phychem_descriptors)
-            combined_loss = loss_class + loss_reg
+            loss = self.classif_loss_fn(class_output, labels)
 
             return {
-                "loss": combined_loss,
+                "loss": loss,
                 "logits": class_output
             }
         
@@ -92,48 +108,55 @@ class CLASSIF_REG(nn.Module):
 # DATA LOADING 
 #####################################
 
+TOKENIZER = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
+
+def tokenize(examples):
+
+    tokens = TOKENIZER(
+        examples["sequence"],
+        padding="longest", # Do it on the fly
+        truncation=True,
+        max_length=1024
+    )
+    tokens["labels"] = examples["labels"]
+    return tokens
+
 def get_input_data():
-    print("Collecting training data")
+
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .select(["descriptors", "protein_emb", "one_hot"])
-        .collect()
+        .select(["sequence", "category", "one_hot"])
         .rename({
-            "protein_emb": "embeddings", 
-            "one_hot": "labels", 
-            "descriptors": "phychem_descriptors"
+            "one_hot": "labels"
         })
-        .to_pandas()
     )
 
-    y_labels = np.argmax(np.stack(df["labels"].values), axis=1)
+    y = df.select("category").collect().to_series().to_numpy()
     loss_weights = compute_class_weight(
         class_weight="balanced", 
-        classes=np.unique(y_labels),  
-        y=y_labels  
+        classes=np.unique(y), 
+        y=y
     )
-    print("    Building dataset ... ")
-    training_dataset = Dataset.from_pandas(df, preserve_index=False)
-    # Keep labels as one-hot vectors.
-    training_dataset.set_format("torch", columns=["phychem_descriptors", "embeddings", "labels"])
+    training_dataset = Dataset.from_pandas(df.collect().to_pandas(), preserve_index=False)
+    training_dataset = training_dataset.map(tokenize, batched=True)
+    training_dataset = training_dataset.remove_columns(["sequence", "category"])
+    training_dataset.set_format("torch")
 
-    print("Collecting eval data")
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .select(["descriptors", "protein_emb", "one_hot"])
-        .collect()
+        .select(["sequence", "category","one_hot"])
         .rename({
-            "protein_emb": "embeddings", 
-            "one_hot": "labels", 
-            "descriptors": "phychem_descriptors"
+            "one_hot": "labels"
         })
-        .to_pandas()
     )
-    print("    Building dataset ... ")
-    eval_dataset = Dataset.from_pandas(df, preserve_index=False)
-    eval_dataset.set_format("torch", columns=["phychem_descriptors", "embeddings", "labels"])
+
+    eval_dataset = Dataset.from_pandas(df.collect().to_pandas(), preserve_index=False)
+    eval_dataset = eval_dataset.map(tokenize, batched=True)
+    eval_dataset = eval_dataset.remove_columns(["sequence", "category"])
+    eval_dataset.set_format("torch")
 
     return training_dataset, eval_dataset, loss_weights
+
 
 #####################################
 # EVALUATION METRICS
@@ -184,51 +207,61 @@ def main():
     
     train_ds, eval_ds, loss_weights = get_input_data()
 
-    MODEL = CLASSIF_REG(
-        input_embed_dim=1024, 
-        hidden_dim=512, 
-        num_classes=5, 
-        descriptors_dim=83, 
-        class_weights=loss_weights, 
+    train_dl = DataLoader(train_ds, batch_size=10)
+
+    # ========== Load / prepare model ==========
+
+    BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float32).to(DEVICE)
+    PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)
+    MODEL = FT_MHAP_MLP(
+
+        base_model=PEFT_MODEL,
+        input_embed_dim=1024,
+        output_embed_dim=512,
+        hidden_dim=256,
+        num_classes=5,
+        class_weights=loss_weights,
         device=DEVICE
-    ) 
+
+    )
+
     check_model_on_gpu(MODEL)
 
     training_args = TrainingArguments(
 
-        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/DB",
-        num_train_epochs=100,
+        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_MHAP_MLP",
+        num_train_epochs=3,
         
-        per_device_train_batch_size=512,
-        per_device_eval_batch_size=1024,
-        eval_strategy="epoch",
-        remove_unused_columns=True,  
+        per_device_train_batch_size=128,
+        per_device_eval_batch_size=512,
+        eval_strategy="steps",
+        remove_unused_columns=False,  
         
-        fp16=False,
+        fp16=True,
         deepspeed="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ds_config.json",
         
         load_best_model_at_end=True,
         metric_for_best_model="f1",   
         greater_is_better=True,
-        save_strategy="epoch",
+        save_strategy="steps",
         save_total_limit=1,
         logging_steps=100,
         report_to=["wandb"],
-        run_name="DB_F1",
-        logging_strategy="no"
-        
+        run_name="FT_MHAP_MLP",
+        logging_strategy = "steps"
+
     )
 
     trainer = Trainer(
-
         model=MODEL,
         args=training_args,
         train_dataset=train_ds,   
-        eval_dataset=eval_ds,        
-        compute_metrics=compute_metrics
+        eval_dataset=eval_ds, 
+        compute_metrics=compute_metrics  
     )
 
-    wandb.init(project="DB", name="DB_F1_DeepSpeed")
+    wandb.init(project="FT_MHAP_MLP", name="FT_MHAP_MLP_DeepSpeed")
+
     trainer.train()
 
 if __name__ == "__main__":

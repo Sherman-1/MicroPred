@@ -26,8 +26,8 @@ import polars as pl
 import torch
 import torch.nn as nn
 
+from torch.utils.data import DataLoader
 from sklearn.utils import compute_class_weight
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 from transformers import (
     T5Tokenizer,
@@ -84,33 +84,60 @@ TOKENIZER = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', 
 # MODEL DEFINITION
 #####################################
 
-class ProtT5Classifier(nn.Module):
+class REG_CLASS(nn.Module):
     """
-    pT5 encoder + One Hidden Layer Perceptron
-    Simple mean pool on residue embeddings
     """
-    def __init__(self, base_model, num_classes, loss_weights=None):
-        super().__init__()
+    def __init__(
+        self,
+        base_model, 
+        num_classes: int, 
+        descriptors_dim: int, 
+        class_weights,
+        device,
+        hidden_dim: int = 512, 
+        input_embed_dim: int = 1024
+        
+    ):
+        """
+        """
+        super(REG_CLASS, self).__init__()
+        self.device = device
         self.encoder = base_model
-        self.classifier = MLP(input_dim=1024, hidden_dim=512, output_dim=num_classes)
+        self.classifier = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
+        self.regressor = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=descriptors_dim).to(device)
 
-        if loss_weights is not None:
-            self.loss_fn = nn.BCEWithLogitsLoss(
-                weight=torch.as_tensor(loss_weights, device=base_model.device, dtype=torch.float32)
+        if class_weights is not None:
+            self.classif_loss_fn = nn.BCEWithLogitsLoss(
+                weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
             )
         else:
-            self.loss_fn = nn.BCEWithLogitsLoss()
+            self.classif_loss_fn = nn.BCEWithLogitsLoss()
+            
+        self.reg_loss_fn = nn.MSELoss()
 
-    def forward(self, input_ids, attention_mask, labels=None):
+    def forward(self, input_ids, attention_mask, labels=None, phychem_descriptors=None):
+        """
+        """
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.last_hidden_state.mean(dim=1)  # Average pooling over seq length ( L )
-        logits = self.classifier(pooled_output)
+        pooled_output = outputs.last_hidden_state.mean(dim=1)
+        
+        class_output = self.classifier(pooled_output)
+        reg_output = self.regressor(pooled_output)
 
-        loss = None
-        if labels is not None:
-            loss = self.loss_fn(logits, labels)
+        if pooled_output.device != self.device:
+            pooled_output = pooled_output.to(self.device)
+        if labels is not None and labels.device != self.device:
+            labels = labels.to(self.device)
+        if phychem_descriptors is not None and phychem_descriptors.device != self.device:
+            phychem_descriptors = phychem_descriptors.to(self.device)
 
-        return {"loss": loss, "logits": logits} if loss is not None else logits
+        if labels is not None and phychem_descriptors is not None:
+            loss_class = self.classif_loss_fn(class_output, labels)
+            loss_reg = self.reg_loss_fn(reg_output, phychem_descriptors)
+            combined_loss = loss_class + loss_reg
+            return {"loss": combined_loss, "logits": class_output}
+        else:
+            return {"logits": class_output, "regression": reg_output}
 
 
 #####################################
@@ -166,8 +193,11 @@ def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .select(["sequence", "category", "one_hot"])
-        .rename({"one_hot": "labels"})
+        .select(["sequence", "category", "one_hot", "descriptors"])
+        .rename({
+            "one_hot": "labels",
+            "descriptors": "phychem_descriptors"
+        })
         .collect()
         .to_pandas()
     )
@@ -185,8 +215,11 @@ def get_input_data():
 
     df = (
         pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .select(["sequence", "category","one_hot"])
-        .rename({"one_hot": "labels"})
+        .select(["sequence", "category","one_hot", "descriptors"])
+        .rename({
+            "one_hot": "labels",
+            "descriptors": "phychem_descriptors"
+        })
         .collect()
         .to_pandas()
     )
@@ -197,7 +230,6 @@ def get_input_data():
     eval_dataset.set_format("torch")
 
     return training_dataset, eval_dataset, loss_weights
-
 
 #####################################
 # MAIN TRAINING PIPELINE
@@ -218,16 +250,22 @@ def main():
 
     BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float32).to(DEVICE)
     PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)
-    MODEL = ProtT5Classifier(PEFT_MODEL, 5, loss_weights = loss_weights).to(DEVICE)
+    MODEL = REG_CLASS(
+        base_model=PEFT_MODEL,
+        num_classes=5,
+        descriptors_dim=83, # Number of physico-chemical descriptors
+        class_weights=loss_weights,
+        device=DEVICE
+    )
     check_model_on_gpu(MODEL)
 
     training_args = TrainingArguments(
 
-        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_MLP",
+        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_DB",
         num_train_epochs=5,
         
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=128,
+        per_device_train_batch_size=128,
+        per_device_eval_batch_size=256,
         eval_strategy="steps",
         remove_unused_columns=False,  
         
