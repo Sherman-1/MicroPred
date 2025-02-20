@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#PBS -N FT_DB_MHAP
+#PBS -N GenDataPred
 #PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
 #PBS -l walltime=24:00:00
-#PBS -l mem=64Gb
+#PBS -l mem=128Gb
 #PBS -l ncpus=8
 #PBS -koed
 
@@ -22,5 +22,8 @@ if [ "$gpu_count" -eq 0 ]; then
         exit 1
     fi
 fi
-apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/ --bind /scratchlocal/triton_cache /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/FT_DB_MHAP/FT_DB_MHAP.py
+apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/ \
+    --bind /scratchlocal/triton_cache \
+    /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif \
+    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/generation/generate_pred_data.py
 
