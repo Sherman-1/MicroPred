@@ -74,17 +74,20 @@ class FT_MHAP_MLP(nn.Module):
     """
     ProtT5 encoder + MultiHeadAttention pooling of embeddings instead of mean pooling + MLP classifier/regressor
     """
-    def __init__(self, base_model, input_embed_dim: int, output_embed_dim: int, hidden_dim: int, num_classes: int, class_weights, device):
+    def __init__(self, base_model, input_embed_dim: int, output_embed_dim: int, hidden_dim: int, num_classes: int, device, class_weights=None):
         super(FT_MHAP_MLP, self).__init__()
         self.device = device
         self.encoder = base_model.to(device) 
         self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim).to(device)
         self.classifier = MLP(input_dim=output_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
-        self.classif_loss_fn = nn.BCEWithLogitsLoss(
-            weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
-        )
+        if class_weights is None:  
+            self.classif_loss_fn = nn.BCEWithLogitsLoss()
+        else: 
+            self.classif_loss_fn = nn.BCEWithLogitsLoss(
+                weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
+            )
 
-    def forward(self, input_ids, attention_mask, labels):
+    def forward(self, input_ids, attention_mask, labels = None):
 
         residue_embeddings = self.encoder(input_ids, attention_mask).last_hidden_state # (batch_size, seq_len, embed_dim)
         custom_mhap_masks = ~attention_mask.bool()  # (batch_size, seq_len)
@@ -213,6 +216,7 @@ def main():
 
     BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float32).to(DEVICE)
     PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)
+
     MODEL = FT_MHAP_MLP(
 
         base_model=PEFT_MODEL,

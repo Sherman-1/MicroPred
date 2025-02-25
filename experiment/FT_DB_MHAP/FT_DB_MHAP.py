@@ -74,19 +74,22 @@ class FT_CLASSIF_REG_MHAP(nn.Module):
     """
     ProtT5 encoder + MultiHeadAttention pooling of embeddings instead of mean pooling + MLP classifier/regressor
     """
-    def __init__(self, base_model, input_embed_dim: int, output_embed_dim: int, hidden_dim: int, num_classes: int, descriptors_dim: int, class_weights, device):
+    def __init__(self, base_model, input_embed_dim: int, output_embed_dim: int, hidden_dim: int, num_classes: int, descriptors_dim: int, device, class_weights = None):
         super(FT_CLASSIF_REG_MHAP, self).__init__()
         self.device = device
         self.encoder = base_model.to(device) 
         self.mhap = MHAPooling(embed_dim=input_embed_dim, d_out = output_embed_dim).to(device)
         self.classifier = MLP(input_dim=output_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
         self.regressor = MLP(input_dim=output_embed_dim, hidden_dim=hidden_dim, output_dim=descriptors_dim).to(device)
-        self.classif_loss_fn = nn.BCEWithLogitsLoss(
-            weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
-        )
+        if class_weights is None: 
+            self.classif_loss_fn = nn.BCEWithLogitsLoss()
+        else:
+            self.classif_loss_fn = nn.BCEWithLogitsLoss(
+                weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
+            )
         self.reg_loss_fn = nn.MSELoss()
 
-    def forward(self, input_ids, attention_mask, labels, phychem_descriptors):
+    def forward(self, input_ids, attention_mask, labels = None, phychem_descriptors = None):
 
         residue_embeddings = self.encoder(input_ids, attention_mask).last_hidden_state # (batch_size, seq_len, embed_dim)
         custom_mhap_masks = ~attention_mask.bool()  # (batch_size, seq_len)

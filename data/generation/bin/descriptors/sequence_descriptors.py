@@ -26,7 +26,7 @@ from . import iupred_funcs
 from pyHCA.core.annotateHCA import _annotation_aminoacids
 from pyHCA.core.classHCA import compute_disstat
 
-import multiprocessing
+import multiprocessing as mp
 
 import argparse
 import polars as pl  
@@ -145,15 +145,6 @@ def compute_sequence_metrics(record : SeqRecord):
         return None
 
 
-def pool_process(records, num_processes):
-    
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        print(f"Processing {len(records)} sequences using {num_processes} processes")
-        results = pool.map(compute_sequence_metrics, records)
-
-    return [ res for res in results if res is not None ]
-
-
 def validate_records(records) -> list: 
 
     AA = { "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V" }
@@ -210,7 +201,6 @@ def read_fasta( fasta_path ):
 def process_data(records : list, category): 
 
     setup_aa_indexes()
-    #results = pool_process(records, num_processes=8)
     
     results = []
     for record in tqdm(records):
@@ -325,6 +315,123 @@ def process_data(records : list, category):
     
     return df
 
+def initializer():
+    setup_aa_indexes()
+
+def worker(record):
+    return compute_sequence_metrics(record)
+
+def process_data_pool(records: list, category, num_workers=4):
+    # Create a pool of worker processes.
+    with mp.Pool(initializer=initializer, processes=num_workers) as pool:
+        # Use imap to maintain order and integrate with tqdm.
+        results = []
+        for res in tqdm(pool.imap(worker, records), total=len(records)):
+            if res is not None:
+                results.append(res)
+    
+    # (Rest of your code to build the DataFrame remains the same.)
+    columns = [
+        "id",
+        "seq_len",
+        "hydrophobic_portion",
+        "iupred_portion",
+        "iupred_mean",
+        "anchor_portion",
+        "HCA_score",
+        "A",
+        "R",
+        "N",
+        "D",
+        "C",
+        "Q",
+        "E",
+        "G",
+        "H",
+        "I",
+        "L",
+        "K",
+        "M",
+        "F",
+        "P",
+        "S",
+        "T",
+        "W",
+        "Y",
+        "V",
+        "ARGP820103",
+        "BHAR880101",
+        "CHAM810101",
+        "CHAM820101",
+        "CHAM830101",
+        "CHAM830107",
+        "CHAM830108",
+        "CHOP780201",
+        "CHOP780202",
+        "CHOP780203",
+        "CIDH920105",
+        "FASG760101",
+        "FAUJ880102",
+        "FAUJ880103",
+        "FAUJ880104",
+        "FAUJ880105",
+        "FAUJ880106",
+        "FAUJ880109",
+        "FAUJ880110",
+        "FAUJ880111",
+        "FAUJ880112",
+        "FAUJ880113",
+        "GRAR740102",
+        "JANJ780102",
+        "JANJ780103",
+        "JOND920102",
+        "JUNJ780101",
+        "KLEP840101",
+        "KRIW790101",
+        "KYTJ820101",
+        "LEVM760102",
+        "LEVM760103",
+        "LEVM760104",
+        "LEVM760105",
+        "LEVM760106",
+        "LEVM760107",
+        "NISK800101",
+        "NISK860101",
+        "PONP800101",
+        "RACS770103",
+        "RADA880108",
+        "ROSG850101",
+        "ROSG850102",
+        "ROSM880102",
+        "WARP780101",
+        "WOLR810101",
+        "VINM940101",
+        "TAKK010101",
+        "MONM990201",
+        "KOEP990101",
+        "KOEP990102",
+        "MITS020101",
+        "COSI940101",
+        "PONP930101",
+        "ZHOH040102",
+        "ZHOH040103",
+        "BAEK050101",
+        "CASG920101",
+        "category"
+    ]
+    
+    special_columns = {
+        "id": pl.Utf8,
+        "category": pl.Utf8,
+        "seq_len": pl.Int32,
+    }
+    
+    schema = {col: special_columns.get(col, pl.Float32) for col in columns}
+    df = pl.DataFrame(results, schema=schema)
+    df = df.with_columns(category=pl.lit(category)).select(columns)
+    return df
+
+
 if __name__ == "__main__": 
 
     import argparse 
@@ -336,6 +443,9 @@ if __name__ == "__main__":
 
     parser.add_argument("--input", type=str, help="Input fasta file")
     parser.add_argument("--output", type=str, help="Output CSV file")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers to use in parallel")
+    # Argument if we want to use the pool version
+    parser.add_argument("--use_pool", action="store_true", help="Use pool version")
 
     args = parser.parse_args()
 
@@ -348,11 +458,9 @@ if __name__ == "__main__":
 
     print("============== Processing data ============= ")
     
-    df = process_data(records, category="test")
+    if args.use_pool:
+        df = process_data_pool(records, category="test", num_workers=args.num_workers)
+    else:
+        df = process_data(records, category="test")
 
     df.write_csv(f"{args.output}.tsv", include_header=True, separator="\t")
-    
-
-
-
-

@@ -1,7 +1,7 @@
 from Bio import SeqIO 
 import polars as pl 
 from sklearn.model_selection import train_test_split
-from bin.descriptors.sequence_descriptors import process_data as get_descriptors
+from bin.descriptors.sequence_descriptors import process_data as get_descriptors, process_data_pool as get_descriptors_pool
 from transformers import T5EncoderModel, T5Tokenizer
 import torch
 import warnings
@@ -17,8 +17,6 @@ fastas = {
     "Scer_iORFs" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/iORFs_ESMFold/Scer_IGORFs.pfasta"
 
 }
-
-
 
 if torch.cuda.is_available() and torch.cuda.device_count() > 0:
     DEVICE = "cuda"
@@ -91,39 +89,42 @@ def load_sec_struct_model(device):
 
 def embeddings_to_dataframe(results: dict) -> pl.DataFrame:
     """
-    converts dict returned by get_embeddings() to a Polars DF
-    suited for parquet storage. 
-    Cols : id, protein_embs, residue_embs
+    Converts dict returned by get_embeddings() to a Polars DF suited for parquet storage.
+    Columns: id, protein_emb, residue_emb
     """
+    protein_embs = results.get("protein_embs", {})
+    residue_embs = results.get("residue_embs", {})
 
-    protein_ids = set(results.get("protein_embs", {}).keys())
-    residue_ids = set(results.get("residue_embs", {}).keys())
+    protein_ids = set(protein_embs.keys())
+    residue_ids = set(residue_embs.keys())
 
-    # Shouldn't 
-    assert len(protein_ids) == len(residue_ids), "IDs don't match between per-residue and per-protein embeddings"
+    # Check that both dictionaries have exactly the same keys
+    assert protein_ids == residue_ids, "IDs don't match between per-residue and per-protein embeddings"
 
-    all_ids = protein_ids.union(residue_ids)
+    all_ids = list(protein_ids)  # since they are the same
 
-    rows = []
-    for identifier in all_ids:
+    ids = []
+    prot_list = []
+    resid_list = []
 
-        # { id : { prot_embs : torch.Tensor(1,1024), residue_embs : torch.Tensor(Lx1024) } }
-        protein_array = results.get("protein_embs", {}).get(identifier)
-        protein_list = protein_array.tolist() if protein_array is not None else None
+    for identifier in tqdm(all_ids, desc="Converting embeddings to dataframe", total=len(all_ids)):
+        p_tensor = protein_embs.get(identifier)
+        r_tensor = residue_embs.get(identifier)
 
-        # Get the residue embeddings (2D) if they exist, converting to a list of lists
-        residue_array = results.get("residue_embs", {}).get(identifier)
-        residue_list = residue_array.tolist() if residue_array is not None else None
+        ids.append(identifier)
+        prot_list.append(p_tensor.tolist() if p_tensor is not None else None)
+        resid_list.append(r_tensor.tolist() if r_tensor is not None else None)
 
-        rows.append({
-            "id": identifier,
-            "protein_emb": protein_list,
-            "residue_emb": residue_list
-        })
-
-    return pl.DataFrame(rows)
+    return pl.DataFrame({
+        "id": ids,
+        "protein_emb": prot_list,
+        "residue_emb": resid_list
+    })
 
 def return_final_df(seq_descriptors, seq_embeddings, seq_dict):
+
+
+    print("     Merging dataframes ... ")
 
 
     df = (
@@ -157,6 +158,8 @@ def return_final_df(seq_descriptors, seq_embeddings, seq_dict):
             )
         )
     )
+
+    print("     Cleaning data ... ")
 
     invalids = df.filter(
         (pl.col("descriptors").map_elements(lambda arr: any(x < 0 or x > 1 for x in arr), return_dtype=pl.Boolean))
@@ -211,8 +214,6 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
     if sec_struct:
         print("Loading secondary structure model...")
         sec_struct_model = load_sec_struct_model(device)
-
-
 
     seq_dict   = sorted( seqs.items(), key=lambda kv: len( seqs[kv[0]] ), reverse=True )
     start = time.time()
@@ -273,20 +274,31 @@ def main():
 
     for category, fasta in fastas.items(): 
 
-        records = list(SeqIO.parse(fasta, "fasta"))
+        print(f"Processing {category} ... ")
+
+        records = list(SeqIO.parse(fasta, "fasta"))[:10000]
+
+        np.random.shuffle(records)
+
+        records.sort(key = lambda x: len(x.seq), reverse=False)
 
         seq_dict = { record.id : str(record.seq) for record in records }
 
-        print("Computing sequence descriptors ... : ")
-        seq_descriptors = get_descriptors(records = records, category = category)
+        print("     Computing sequence descriptors ... : ")
+        seq_descriptors = get_descriptors_pool(records = records, category = category, num_workers=40)
 
-        print("Computing embeddings ... ")
+        print("     Computing embeddings ... ")
         seq_embeddings = get_embeddings(device = DEVICE, seqs = seq_dict, per_protein=True, per_residue=True, sec_struct = False, max_batch=300)
         seq_embeddings = embeddings_to_dataframe(seq_embeddings)
 
         final = return_final_df(seq_descriptors, seq_embeddings, seq_dict)
 
-        final.write_parquet(f"../predict_data/{category}.parquet")
+        print("     Writing to parquet ... ")
+
+        final.write_parquet(f"../predict_data/{category}.parquet", compression="lz4")
+
+        print(f"Written to ../predict_data/{category}.parquet")
+        print(f"Done processing {category}, dataset is {final.shape[0]} entries long. ")
 
 if __name__ == "__main__": 
 

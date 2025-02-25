@@ -92,8 +92,8 @@ class REG_CLASS(nn.Module):
         base_model, 
         num_classes: int, 
         descriptors_dim: int, 
-        class_weights,
         device,
+        class_weights = None,
         hidden_dim: int = 512, 
         input_embed_dim: int = 1024
         

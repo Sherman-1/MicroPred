@@ -79,7 +79,7 @@ class ProtT5Classifier(nn.Module):
         if labels is not None:
             loss = self.loss_fn(logits, labels)
 
-        return {"loss": loss, "logits": logits} if loss is not None else logits
+        return {"loss": loss, "logits": logits} if loss is not None else {"logits": logits}
 
 
 #####################################

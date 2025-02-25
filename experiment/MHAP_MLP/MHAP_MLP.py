@@ -81,7 +81,7 @@ class MHAP_MLP(nn.Module):
                 input_embed_dim:int, 
                 mlp_hidden_dim:int,
                 output_embed_dim:int, 
-                loss_weights:torch.Tensor
+                loss_weights:torch.Tensor = None
             ):
         
         super(MHAP_MLP, self).__init__()
@@ -95,14 +95,14 @@ class MHAP_MLP(nn.Module):
         else:
             self.loss_fn = nn.BCEWithLogitsLoss()
 
-    def forward(self, embeddings, attention_mask, labels):
+    def forward(self, embeddings, attention_mask, labels = None):
         attn_output, _ = self.mhap(embeddings, attention_mask)  
         logits = self.mlp(attn_output)      
         loss = None
         if labels is not None:
             loss = self.loss_fn(logits, labels)
 
-        return {"loss": loss, "logits": logits} if loss is not None else logits
+        return {"loss": loss, "logits": logits} if loss is not None else {"logits": logits}
 
 
 #####################################

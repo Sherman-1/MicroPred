@@ -52,17 +52,21 @@ set_seed(66)
 #####################################
 
 class CLASSIF_REG(nn.Module):
-    def __init__(self, input_embed_dim: int, hidden_dim: int, num_classes: int, descriptors_dim: int, class_weights, device):
+    def __init__(self, input_embed_dim: int, hidden_dim: int, num_classes: int, descriptors_dim: int, device, class_weights = None):
         super(CLASSIF_REG, self).__init__()
         self.device = device
         self.classifier = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=num_classes).to(device)
         self.regressor = MLP(input_dim=input_embed_dim, hidden_dim=hidden_dim, output_dim=descriptors_dim).to(device)
-        self.classif_loss_fn = nn.BCEWithLogitsLoss(
-            weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
-        )
+        
+        if class_weights is None:
+            self.class_loss_fn = nn.BCEWithLogitsLoss()
+        else:
+            self.classif_loss_fn = nn.BCEWithLogitsLoss(
+                weight=torch.as_tensor(class_weights, dtype=torch.float32, device=device)
+            )
         self.reg_loss_fn = nn.MSELoss()
 
-    def forward(self, embeddings, labels, phychem_descriptors):
+    def forward(self, embeddings, labels = None, phychem_descriptors = None):
 
         if embeddings is not None and embeddings.device != self.device:
             embeddings = embeddings.to(self.device)

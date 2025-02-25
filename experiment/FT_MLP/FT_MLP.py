@@ -102,7 +102,7 @@ class ProtT5Classifier(nn.Module):
             self.loss_fn = nn.BCEWithLogitsLoss()
 
     def forward(self, input_ids, attention_mask, labels=None):
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask) # ( B, L, 1024 )
         pooled_output = outputs.last_hidden_state.mean(dim=1)  # Average pooling over seq length ( L )
         logits = self.classifier(pooled_output)
 
@@ -110,7 +110,7 @@ class ProtT5Classifier(nn.Module):
         if labels is not None:
             loss = self.loss_fn(logits, labels)
 
-        return {"loss": loss, "logits": logits} if loss is not None else logits
+        return {"loss": loss, "logits": logits} if loss is not None else {"logits": logits}
 
 
 #####################################
@@ -224,10 +224,10 @@ def main():
     training_args = TrainingArguments(
 
         output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_MLP",
-        num_train_epochs=5,
+        num_train_epochs=3,
         
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=128,
+        per_device_train_batch_size=64,
+        per_device_eval_batch_size=512,
         eval_strategy="steps",
         remove_unused_columns=False,  
         
