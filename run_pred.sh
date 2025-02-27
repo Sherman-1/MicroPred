@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#PBS -N PredictAllModels
+#PBS -N ShuffledData
 #PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
@@ -27,4 +27,4 @@ fi
 apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/ \
     --bind /scratchlocal/triton_cache \
     /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif \
-    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/explore_models/run_predictions.py
+    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/generation/generate_shuffle_data.py
