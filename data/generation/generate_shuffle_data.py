@@ -18,7 +18,6 @@ def main():
     for fasta in paths:
 
         category = fasta.stem
-
         print(f"Processing {category} ... ")
 
         records = list(SeqIO.parse(fasta, "fasta"))
@@ -38,9 +37,9 @@ def main():
 
         print("     Writing to parquet ... ")
 
-        final.write_parquet(f"../shuffled_data/{category}.parquet", compression="lz4")
+        final.write_parquet(f"/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/shuffled_data/{category}.parquet", compression="lz4")
 
-        print(f"Written to ../shuffled_data/{category}.parquet")
+        print(f"Written to /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/shuffled_data/{category}.parquet")
         print(f"Done processing {category}, dataset is {final.shape[0]} entries long. ")
 
 

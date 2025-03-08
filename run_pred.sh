@@ -4,8 +4,8 @@
 #PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
-#PBS -l walltime=48:00:00
-#PBS -l mem=350Gb
+#PBS -l walltime=72:00:00
+#PBS -l mem=450Gb
 #PBS -l ncpus=40
 #PBS -koed
 
@@ -22,7 +22,6 @@ if [ "$gpu_count" -eq 0 ]; then
         exit 1
     fi
 fi
-
 
 apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/ \
     --bind /scratchlocal/triton_cache \
