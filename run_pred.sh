@@ -1,14 +1,13 @@
 #!/bin/bash
 
-#PBS -N ShuffledData
+#PBS -N TripeltLoss
 #PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
 #PBS -l walltime=72:00:00
-#PBS -l mem=450Gb
-#PBS -l ncpus=40
+#PBS -l mem=200Gb
+#PBS -l ncpus=30
 #PBS -koed
-
 
 cd $PBS_O_WORKDIR
 
@@ -26,4 +25,4 @@ fi
 apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/ \
     --bind /scratchlocal/triton_cache \
     /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif \
-    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/generation/generate_shuffle_data.py
+    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/triplet/FT_MLP.py
