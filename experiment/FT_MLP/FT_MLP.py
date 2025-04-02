@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-
-
 """
 ======================================================
 Author: Simon HERMAN
@@ -40,7 +38,7 @@ from transformers import (
 import evaluate
 
 from peft import get_peft_model, LoraConfig, TaskType
-from datasets import Dataset
+from datasets import Dataset, load_from_disk
 import wandb
 
 # ========== Local imports ==========
@@ -53,6 +51,10 @@ os.environ["TRITON_CACHE_DIR"] = "/scratchlocal/triton_cache"
 
 from MHA import MLP
 from utils import print_gpu_memory, check_model_on_gpu, set_seed
+
+import pandas as pd
+from Bio import SeqIO
+from sklearn.model_selection import train_test_split
 
 # ===================================
 
@@ -74,7 +76,7 @@ LORA_CONFIG = LoraConfig(
 if not torch.cuda.is_available():
     sys.exit("Cuda-compatible GPU not found!")
 
-set_seed(66)
+set_seed(66370)
 
 
 TOKENIZER = T5Tokenizer.from_pretrained('Rostlab/prot_t5_xl_half_uniref50-enc', do_lower_case=False)
@@ -105,9 +107,10 @@ class ProtT5Classifier(nn.Module):
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask) # ( B, L, 1024 )
         pooled_output = outputs.last_hidden_state.mean(dim=1)  # Average pooling over seq length ( L )
         logits = self.classifier(pooled_output)
-
+        
         loss = None
         if labels is not None:
+            labels = labels.to(dtype=logits.dtype)
             loss = self.loss_fn(logits, labels)
 
         return {"loss": loss, "logits": logits} if loss is not None else {"logits": logits}
@@ -157,46 +160,78 @@ def tokenize(examples):
         examples["sequence"],
         padding="longest", # Do it on the fly
         truncation=True,
-        max_length=1024
+        max_length=100
     )
     tokens["labels"] = examples["labels"]
     return tokens
 
+
 def get_input_data():
 
-    df = (
-        pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/train.parquet")
-        .select(["sequence", "category", "one_hot"])
-        .rename({"one_hot": "labels"})
-        .collect()
-        .to_pandas()
+    fastas = {
+        
+        "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/globular_homologs_representatives.fasta",
+        "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/molten_homologs_representatives.fasta",
+        "transmembrane" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/transmembrane_elongated_representatives.fasta",
+        "disordered" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/representative_disordered_sequences.fasta"
+    }
+
+    CLASSES = [
+        "molten",
+        "globular",
+        "transmembrane",
+        "disordered"
+    ]
+
+    CLASS_TO_INT = dict(zip(CLASSES, range(len(CLASSES)))) 
+
+    sequences = []
+    categories = []
+
+    for category, fasta_file in fastas.items():
+        for record in SeqIO.parse(fasta_file, "fasta"):
+            spaced_sequence = " ".join(str(record.seq))
+            sequences.append(spaced_sequence)
+            categories.append(category)
+
+    df = pd.DataFrame({
+        "sequence": sequences,
+        "category": categories
+    })
+
+    def one_hot_encode(cat):
+        vector = [0] * len(CLASSES)
+        vector[CLASS_TO_INT[cat]] = 1
+        return vector
+
+    df["one_hot"] = df["category"].apply(one_hot_encode)
+    df.rename(columns={"one_hot": "labels"}, inplace=True)
+
+    train_df, eval_df = train_test_split(
+        df,
+        test_size=0.5,
+        stratify=df["category"],
+        random_state=42
     )
 
     loss_weights = compute_class_weight(
-        class_weight="balanced", 
-        classes=np.unique(df["category"].values), 
+        class_weight="balanced",
+        classes=np.unique(df["category"].values),
         y=df["category"].values
     )
 
-    training_dataset = Dataset.from_pandas(df, preserve_index=False)
+    training_dataset = Dataset.from_pandas(train_df, preserve_index=False)
     training_dataset = training_dataset.map(tokenize, batched=True)
     training_dataset = training_dataset.remove_columns(["sequence", "category"])
     training_dataset.set_format("torch")
 
-    df = (
-        pl.scan_parquet("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/eval.parquet")
-        .select(["sequence", "category","one_hot"])
-        .rename({"one_hot": "labels"})
-        .collect()
-        .to_pandas()
-    )
-
-    eval_dataset = Dataset.from_pandas(df, preserve_index=False)
+    eval_dataset = Dataset.from_pandas(eval_df, preserve_index=False)
     eval_dataset = eval_dataset.map(tokenize, batched=True)
     eval_dataset = eval_dataset.remove_columns(["sequence", "category"])
     eval_dataset.set_format("torch")
 
     return training_dataset, eval_dataset, loss_weights
+
 
 
 #####################################
@@ -214,19 +249,26 @@ def main():
     
     train_ds, eval_ds, loss_weights = get_input_data()
 
+    # Later load them with datasets' load_from_disk
+    train_ds.save_to_disk("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/new_training_dataset")
+    eval_ds.save_to_disk("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/new_eval_dataset")
+
+    # train_ds = load_from_disk("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/new_training_dataset")
+    # eval_ds = load_from_disk("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/training_dataset/new_eval_dataset")
+
     data_collator = DataCollatorWithPadding(tokenizer=TOKENIZER)
 
     BASE_MODEL = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_half_uniref50-enc", torch_dtype=torch.float32).to(DEVICE)
     PEFT_MODEL = get_peft_model(BASE_MODEL, LORA_CONFIG)
-    MODEL = ProtT5Classifier(PEFT_MODEL, 5, loss_weights = loss_weights).to(DEVICE)
+    MODEL = ProtT5Classifier(PEFT_MODEL, 4, loss_weights = loss_weights).to(DEVICE)
     check_model_on_gpu(MODEL)
 
     training_args = TrainingArguments(
 
-        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/FT_MLP",
+        output_dir="/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/models/new_FT_MLP",
         num_train_epochs=3,
         
-        per_device_train_batch_size=64,
+        per_device_train_batch_size=32,
         per_device_eval_batch_size=512,
         eval_strategy="steps",
         remove_unused_columns=False,  
@@ -239,9 +281,10 @@ def main():
         greater_is_better=True,
         save_strategy="steps",
         save_total_limit=1,
-        logging_steps=100,
+        logging_steps=500,
+        save_steps=500,
         report_to=["wandb"],
-        run_name="FT_MLP"
+        run_name="new_FT_MLP"
 
     )
 
@@ -255,7 +298,7 @@ def main():
         compute_metrics=compute_metrics  
     )
 
-    wandb.init(project="FT_MLP", name="FT_DeepSpeed")
+    wandb.init(project="new_FT_MLP", name="FT_DeepSpeed")
 
     trainer.train()
 

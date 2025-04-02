@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#PBS -N TripeltLoss
+#PBS -N PredIORFs60000
 #PBS -q bim
 #PBS -l host=node04
 #PBS -l ngpus=1
-#PBS -l walltime=72:00:00
-#PBS -l mem=200Gb
-#PBS -l ncpus=30
+#PBS -l walltime=8:00:00
+#PBS -l mem=32Gb
+#PBS -l ncpus=8
 #PBS -koed
 
 cd $PBS_O_WORKDIR
@@ -25,4 +25,4 @@ fi
 apptainer exec --nv --bind /store/EQUIPES/BIM/MEMBERS/simon.herman/ \
     --bind /scratchlocal/triton_cache \
     /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/DeepSpeed.sif \
-    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/experiment/triplet/FT_MLP.py
+    python3 /store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/use_new_model.py

@@ -4,8 +4,6 @@ from Bio import SeqIO
 import random
 
 
-
-
 def shuffle_sequences(input_file, output_file):
 
     print(f"Shuffling sequences in {input_file} and writing to {output_file}")
@@ -24,8 +22,11 @@ def shuffle_sequences(input_file, output_file):
 
 if __name__ == "__main__":
 
-    files = Path("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas").glob("*.fa*")
 
+    file = Path("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas_GlobMoltenShuf/globular_homologs_representatives.fasta.split/split_globular.part_002.fasta")
 
-    for file in files:
-        shuffle_sequences(file, file.with_name(file.stem + "_shuffled" + file.suffix))
+    shuffle_sequences(file, file.with_name(file.stem + "_shuffled" + file.suffix))
+
+    file = Path("/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas_GlobMoltenShuf/molten_homologs_representatives.fasta.split/split_molten.part_002.fasta")
+
+    shuffle_sequences(file, file.with_name(file.stem + "_shuffled" + file.suffix))

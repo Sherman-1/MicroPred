@@ -1,0 +1,11 @@
+                          precision    recall  f1-score   support
+
+                  molten       0.95      0.97      0.96      1367
+                globular       0.97      0.97      0.97      3870
+           transmembrane       0.95      0.97      0.96       329
+              disordered       0.93      0.92      0.92      2486
+shuffled_globular_molten       0.95      0.94      0.94      1746
+
+                accuracy                           0.95      9798
+               macro avg       0.95      0.95      0.95      9798
+            weighted avg       0.95      0.95      0.95      9798

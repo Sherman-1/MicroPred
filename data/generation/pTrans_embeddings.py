@@ -73,7 +73,7 @@ def read_fasta( fasta_path ):
     return sequences
 
 
-def get_embeddings( model, tokenizer, device, seqs, per_residue, per_protein, 
+def get_embeddings(model, tokenizer, device, seqs, per_residue, output_attentions,
                    max_residues=2000, max_seq_len=1000, max_batch=100 ):
 
     """
@@ -126,7 +126,7 @@ def get_embeddings( model, tokenizer, device, seqs, per_residue, per_protein,
             with torch.no_grad():
 
                 # returns: ( batch-size x max_seq_len_in_minibatch x embedding_dim )
-                embedding_repr = model(input_ids, attention_mask=attention_mask)
+                embedding_repr = model(input_ids, attention_mask=attention_mask, output_attentions=output_attentions)
 
             for batch_idx, identifier in enumerate(pdb_ids): # for each protein in the current mini-batch
                 s_len = seq_lens[batch_idx]
@@ -138,6 +138,9 @@ def get_embeddings( model, tokenizer, device, seqs, per_residue, per_protein,
                 if per_protein: # apply average-pooling to derive per-protein embeddings (1024-d)
                     protein_emb = emb.mean(dim=0)
                     results["protein_embs"][identifier] = protein_emb.detach().cpu().squeeze()
+                if output_attentions: # store attention weights
+                    att = embedding_repr.attentions[batch_idx]
+                
 
 
     passed_time=time.time()-start
@@ -152,7 +155,7 @@ def get_embeddings( model, tokenizer, device, seqs, per_residue, per_protein,
     return results
 
 
-def compute(sequences : dict ,max_residues=2000, max_seq_len=1000, max_batch=100, per_protein=True, per_residue=False):
+def compute(sequences : dict ,max_residues=2000, max_seq_len=1000, max_batch=100, per_residue=False, attention=False):
 
     if torch.cuda.is_available():
 
@@ -171,7 +174,7 @@ def compute(sequences : dict ,max_residues=2000, max_seq_len=1000, max_batch=100
 
     model, tokenizer = get_T5_model(device)
 
-    embeddings = get_embeddings(model, tokenizer, device, sequences, per_residue, per_protein, max_residues=max_residues, max_seq_len=max_seq_len, max_batch=max_batch)
+    embeddings = get_embeddings(model = model, tokenizer = tokenizer, device = device, seqs = sequences, per_residue = per_residue, output_attentions = attention, max_residues=max_residues, max_seq_len=max_seq_len, max_batch=max_batch)
 
     return embeddings  
 
@@ -211,7 +214,7 @@ def extract_sequences_from_pdbs(directory):
     return sequences_dict 
 
 
-def main(fasta_path, batch_size, max_residues, max_seq_len):
+def main(fasta_path, batch_size, max_residues, max_seq_len, per_residue, attention):
 
     sequences = read_fasta(fasta_path)
 
@@ -243,8 +246,8 @@ if __name__ == "__main__":
     parser.add_argument('--max_residues', type=int, default = 4000, help='Maximum number of residues per batch')
     parser.add_argument('--max_seq_len', type=int, default = 1000, help='Maximum sequence length for processing')
     parser.add_argument('--output', type=str, help='Name of the data to use for writting the embeddings')
-    parser.add_argument('--per_protein', type=bool, help="Pool per amino acid embeddings into single 1024 tensor per protein", default = True)
-    parser.add_argument('--per_amino', type = bool, help="Compute per amino acid embeddings", default = False)
+    parser.add_argument('--per_residue', type = bool, help="Return per amino acid embeddings, default only returns mean pooled per residue embeddings", default = False)
+    parser.add_argument('--attention', type = bool, help="Compute attention weights", default = False)
 
     args = parser.parse_args()
 
@@ -252,11 +255,9 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     max_residues = args.max_residues
     max_seq_len = args.max_seq_len
+    per_residue = args.per_residue
     output = args.output
-    per_protein = args.per_protein
-    per_amino = args.per_amino 
-
-    assert (per_amino and per_protein) == False, "Choose at least one type of embeddings to compute"
+    attention = args.attention
 
     filename = f"{output}.parquet"
 
@@ -278,7 +279,6 @@ if __name__ == "__main__":
             print("Invalid input. Exiting ...")
             exit()
             
-    if per_protein:
-        
-        df = main(fasta_path, batch_size, max_residues, max_seq_len)
-        df.write_parquet(f"{output}.parquet", compression = "zstd", compression_level=22)
+
+    df = main(fasta_path, batch_size, max_residues, max_seq_len, per_residue, attention)
+    df.write_parquet(f"{output}.parquet", compression = "zstd", compression_level=22)

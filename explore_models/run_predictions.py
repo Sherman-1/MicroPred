@@ -172,6 +172,7 @@ def old_padding_collate(batch):
         "attention_mask": batch_attention_mask,
         "id": ids
     }
+
 def padding_collate(batch):
 
     embeddings = [
@@ -220,7 +221,6 @@ def padding_collate(batch):
         "attention_mask": batch_attention_mask,
         "id": [item["id"] for item in batch]
     }
-
 
 def prepare_datasets(data_path):
 
@@ -275,8 +275,6 @@ def compute_logits_dataframes(models):
             model_type = model_infos["type"]
             print(f"    Model type : {model_type}")
             dataset = datasets[model_type]
-
-            print(dataset)
             
             if model_type == "residue_emb":
                 dataloader = DataLoader(dataset, batch_size=1024, shuffle=False, collate_fn=padding_collate)

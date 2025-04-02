@@ -1,24 +1,13 @@
 from Bio import SeqIO 
 import polars as pl 
 from sklearn.model_selection import train_test_split
-from bin.descriptors.sequence_descriptors import process_data as get_descriptors
+from bin.descriptors.sequence_descriptors import process_data_pool as get_descriptors
 from transformers import T5EncoderModel, T5Tokenizer
 import torch
 import warnings
 from tqdm import tqdm 
 import time 
 import numpy as np
-
-# Better in a yaml file, do it later
-fastas = {
-
-    "bitopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/bitopic_representatives.fasta",
-    "polytopic" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/polytopic_representatives.fasta",
-    "disprot"  : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/disprot_representatives.fasta", 
-    "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/Small_full.fasta",
-    "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/processed_fastas/S3_full_subset.fasta"
-
-}
 
 CLASSES = [
     
@@ -286,6 +275,17 @@ def get_embeddings(device : torch.device, seqs : dict, per_residue : bool, per_p
 
 def main():
 
+    # Better in a yaml file, do it later
+    from pathlib import Path
+
+    fastas = {
+        
+        "globular" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/globular_homologs_representatives.fasta",
+        "molten" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/molten_homologs_representatives.fasta",
+        "transmembrane" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/transmembrane_elongated_representatives.fasta",
+        "disordered" : "/store/EQUIPES/BIM/MEMBERS/simon.herman/MicroPred/data/new_processed_fastas/representative_disordered_sequences.fasta"
+    }
+
     dfs = []
 
     unique_classes = [ CLASS_TO_INT[CLASS] for CLASS in CLASSES ]
@@ -297,7 +297,7 @@ def main():
         seq_dict = { record.id : str(record.seq) for record in records }
 
         print("Computing sequence descriptors ... : ")
-        seq_descriptors = get_descriptors(records = records, category = CLASS_TO_INT[category])
+        seq_descriptors = get_descriptors(records = records, category = CLASS_TO_INT[category], num_workers = 32)
 
         print("Computing embeddings ... ")
         seq_embeddings = get_embeddings(device = DEVICE, seqs = seq_dict, per_protein=True, per_residue=True, sec_struct = False, max_batch=300)
@@ -312,10 +312,10 @@ def main():
     print(train.select(["category","one_hot"]))
 
     print(f"Writting {train.height} sequences to train dataset")
-    train.write_parquet("../training_dataset/train.parquet")
+    train.write_parquet("../training_dataset/new_train.parquet")
 
     print(f"Writting {val.height} sequences to validation dataset")
-    val.write_parquet("../training_dataset/eval.parquet")
+    val.write_parquet("../training_dataset/new_eval.parquet")
 
 if __name__ == "__main__": 
 
